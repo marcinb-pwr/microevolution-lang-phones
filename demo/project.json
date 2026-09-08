@@ -1,0 +1,18 @@
+{
+  "name": "Frozen synthetic three-period demonstration",
+  "recordings": "recordings.csv",
+  "tokens": "tokens.csv",
+  "run": {
+    "run_id": "demo-frozen-v1",
+    "code_revision": "development",
+    "measurement_method": "precomputed synthetic demonstration values; NOT Praat observations",
+    "configuration": {
+      "purpose": "interface demonstration only"
+    },
+    "input_hashes": {
+      "syn-2014": "5e77dbe72e25925d7b668487d970e02ecd698a54a45fd499a25650e555576d85",
+      "syn-2018": "f3ee660980a46411888deae34329b22476722949e488fc9599e397c50ce3089c",
+      "syn-2022": "ba0d3525e7a6c20069566dda93583c50eb5e90e385665003b6afaaeefb92e1bc"
+    }
+  }
+}

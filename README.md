@@ -1,46 +1,77 @@
-# microevolution-phones
-This repo stores ideas and approaches to the microevolution of individual speaker's phonemes retrieved from recordings found on youtube
+# Phoneme microevolution: provenance-first pilot
 
-## Set-up
-The project is written in python. It requires setting the environment using Pipenv. First ensure that `pipenv` is already installed - if not, type `pip install pipenv`.
+This restart provides a small vertical slice for **local WAV recordings and manually
+checked phone intervals**. It validates portable project tables, measures formants
+with Praat's Burg analysis, keeps every token in original-recording coordinates,
+and presents timelines, conventional vowel space, original-audio playback,
+persistent review, and reproducible exports.
 
-Now, type `pipenv install` and `pipenv shell` et voila - you should be able to run scripts seamlessly now.
+The older PocketSphinx and exploratory embedding pipeline remains under `scripts/`
+for historical reference. Its peak-picking `Formants` output must be described as
+spectral peaks, not as validated F1/F2 measurements.
 
-## Third party
+## Quick start
 
-- [Multicore-TSNE](#multicore-tsne)
-- [pocketsphinx](#pocketsphinx)
-- [pytube](#pytube)
+Python 3.10 or newer is required. The historic Python 3.6 `Pipfile` is retained only
+as a record of the earlier environment.
 
-### Multicore-TSNE
-This is a multicore modification of Barnes-Hut t-SNE 
-by L. Van der Maaten with python and Torch CFFI-based wrappers. 
-This code also works faster than `sklearn.TSNE` on single core.
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e '.[test]'
+python demo/generate_audio.py
+microevolution validate demo/project.json
+streamlit run app.py
+```
 
-Officially distributed library has a defect 
-that it occupies just a single core when run on macOS.
-Hence, sources from macOS complaint fork are used: 
-https://github.com/sg-s/Multicore-TSNE
+The default project is a three-period, reproducibly generated **synthetic interface demonstration**.
+It contains no human speech and its illustrative F1/F2 values are not empirical
+results. Its rows are marked `data_origin=synthetic`; observed and synthetic data
+must be separate projects and the viewer requires an explicit origin selection.
+Generated WAVs are ignored by Git and verified against hashes in the checked-in
+manifest, avoiding opaque binary diffs while keeping the demonstration repeatable.
 
-(see [Issue #53: Using single core even when n_jobs=4 is used](https://github.com/DmitryUlyanov/Multicore-TSNE/issues/53))
+## Make an observed project
 
+Copy `demo/project.json`, `recordings.csv`, and `tokens.csv` as templates. Put WAV
+files below the project directory and add their SHA-256 hashes. Token intervals use
+seconds in the original WAV—not in a concatenated excerpt. Leave unknown dates and
+unknown acoustic values empty. `recording_date` takes priority; `upload_date` is
+shown as an explicit proxy. If both are empty, the token remains visible in review
+but never enters the timeline.
 
-### pocketsphinx
-`PocketSphinx` is a lightweight speech recognition engine, 
-specifically tuned for handheld and mobile devices, 
-though it works equally well on the desktop.
+Validate before extraction:
 
-While an official distribution of `pocketsphinx` is installed 
-with `pipenv`, source repository contains an officially 
-distributed generic US english acoustic 
-model trained with latest `sphinxtrain`.
+```bash
+microevolution validate path/to/project.json
+microevolution extract path/to/project.json --max-formant-hz 5500 --window-s 0.025
+```
 
-### pytube
-A lightweight, dependency-free Python library 
-(and command-line utility) for downloading YouTube 
-Videos. https://python-pytube.readthedocs.io
+Extraction records a run identifier, code revision, method, and settings. It stores
+five relative-position track samples and the median of the central three. Intervals
+shorter than 40 ms, silence/near-silence, and intervals without trackable F1/F2 are
+explicitly rejected with missing acoustic values. Use `--force` only when deliberately
+starting a new measurement run.
 
-Sometimes (like as of 2019-04-27) official distribution of `pytube` is not
-working because youtube API changed in the meantime.
-This will be patched officially for sure at some day 
-but until then a forked repository with local fix is used.
+## Calibration before interpretation
+
+The default ceiling is not universally appropriate. Select a stratified calibration
+subset spanning periods and recording conditions, measure it manually in Praat with
+the same Burg window/ceiling, and compare central F1/F2 plus full tracks. Record the
+comparison and selected configuration, then freeze it before the main extraction.
+Automated tests verify data integrity and audio coordinate behavior; they are not a
+claim of acoustic agreement with an external Praat calibration set.
+
+Review choices are stored in `reviews.sqlite3` beside the manifest and survive app
+restarts. Exports contain exactly the current filtered token IDs, the referenced
+recordings, review overrides, selection metadata, and the run record. Audio itself
+is intentionally not duplicated into exports; its path and pinned hash remain in
+the recording table.
+
+## Scientific interpretation
+
+The views are descriptive. A plotted point is one token; the interface separately
+reports independent recordings. Token spread is not uncertainty in a mean, and
+neither an embedding nor a changing centroid alone establishes phonetic change.
+Recording/session clustering, lexical context, recording setup, and exclusion rates
+must be addressed by later inferential work.
