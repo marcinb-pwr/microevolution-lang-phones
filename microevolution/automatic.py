@@ -12,7 +12,7 @@ import hashlib
 import json
 import subprocess
 import wave
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -24,18 +24,33 @@ def utc_run_id(prefix: str) -> str:
 
 
 def collect_youtube(urls: Iterable[str], root: Path, *, speaker_id: str,
-                    yt_dlp: str = "yt-dlp") -> list[dict[str, str]]:
-    """Download URLs as mono WAV files and return provenance-complete rows.
+                    yt_dlp: str = "yt-dlp", max_videos: int | None = None,
+                    date_after: str | None = None) -> list[dict[str, str]]:
+    """Download video or channel URLs and return provenance-complete rows.
 
     yt-dlp's printed JSON is used rather than scraping YouTube pages. Existing
-    files are reused by yt-dlp, making an interrupted collection resumable.
+    files are reused by yt-dlp, making an interrupted collection resumable. A
+    channel URL is intentionally treated as a playlist; use ``max_videos`` while
+    piloting to avoid accidentally downloading an entire channel.
     """
+    if max_videos is not None and max_videos < 1:
+        raise ProjectError("max_videos must be positive")
+    if date_after:
+        try:
+            date.fromisoformat(date_after)
+        except ValueError as exc:
+            raise ProjectError("date_after must use YYYY-MM-DD") from exc
     audio_dir = root / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for url in urls:
-        command = [yt_dlp, "--no-playlist", "--print-json", "-x", "--audio-format", "wav",
-                   "--audio-quality", "0", "-o", str(audio_dir / "%(id)s.%(ext)s"), url]
+        command = [yt_dlp, "--yes-playlist", "--print-json", "-x", "--audio-format", "wav",
+                   "--audio-quality", "0", "-o", str(audio_dir / "%(id)s.%(ext)s")]
+        if max_videos is not None:
+            command.extend(["--playlist-end", str(max_videos)])
+        if date_after:
+            command.extend(["--dateafter", date_after.replace("-", "")])
+        command.append(url)
         try:
             result = subprocess.run(command, check=True, text=True, capture_output=True)
         except FileNotFoundError as exc:
@@ -45,26 +60,30 @@ def collect_youtube(urls: Iterable[str], root: Path, *, speaker_id: str,
         lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
         if not lines:
             raise ProjectError(f"yt-dlp returned no metadata for {url}")
-        info = json.loads(lines[-1])
-        video_id = str(info["id"])
-        audio = audio_dir / f"{video_id}.wav"
-        if not audio.is_file():
-            raise ProjectError(f"yt-dlp did not create expected audio: {audio}")
-        with wave.open(str(audio), "rb") as wav:
-            rate = wav.getframerate()
-        upload = str(info.get("upload_date") or "")
-        upload = f"{upload[:4]}-{upload[4:6]}-{upload[6:8]}" if len(upload) == 8 else ""
-        row = {field: "" for field in RECORDING_FIELDS}
-        row.update(recording_id=f"yt-{video_id}", speaker_id=speaker_id,
-                   source_url=str(info.get("webpage_url") or url),
-                   local_audio_path=audio.relative_to(root).as_posix(),
-                   audio_sha256=hashlib.sha256(audio.read_bytes()).hexdigest(),
-                   upload_date=upload, date_basis="upload_date_proxy",
-                   session_id=f"youtube-{video_id}", recording_setup="unknown",
-                   style="online_video", sample_rate=str(rate),
-                   quality_notes="automatically downloaded; recording date unknown",
-                   data_origin="observed")
-        rows.append(row)
+        for line in lines:
+            info = json.loads(line)
+            video_id = str(info["id"])
+            audio = audio_dir / f"{video_id}.wav"
+            if not audio.is_file():
+                raise ProjectError(f"yt-dlp did not create expected audio: {audio}")
+            with wave.open(str(audio), "rb") as wav:
+                rate = wav.getframerate()
+            upload = str(info.get("upload_date") or "")
+            upload = f"{upload[:4]}-{upload[4:6]}-{upload[6:8]}" if len(upload) == 8 else ""
+            channel = str(info.get("channel") or info.get("uploader") or "unknown")
+            channel_id = str(info.get("channel_id") or info.get("uploader_id") or "unknown")
+            row = {field: "" for field in RECORDING_FIELDS}
+            row.update(recording_id=f"yt-{video_id}", speaker_id=speaker_id,
+                       source_url=str(info.get("webpage_url") or url),
+                       local_audio_path=audio.relative_to(root).as_posix(),
+                       audio_sha256=hashlib.sha256(audio.read_bytes()).hexdigest(),
+                       upload_date=upload, date_basis="upload_date_proxy",
+                       session_id=f"youtube-{video_id}", recording_setup="unknown",
+                       style="online_video", sample_rate=str(rate),
+                       quality_notes=(f"automatically downloaded from channel {channel} "
+                                      f"({channel_id}); recording date unknown"),
+                       data_origin="observed")
+            rows.append(row)
     return rows
 
 

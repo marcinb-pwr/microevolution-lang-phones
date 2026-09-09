@@ -27,6 +27,9 @@ def main(argv=None):
     collect.add_argument("urls", nargs="+")
     collect.add_argument("--speaker-id", required=True)
     collect.add_argument("--yt-dlp", default="yt-dlp", help="yt-dlp executable")
+    collect.add_argument("--max-videos", type=int,
+                         help="maximum videos per channel/playlist (recommended for pilots)")
+    collect.add_argument("--date-after", help="only videos uploaded on/after YYYY-MM-DD")
     transcribe = sub.add_parser("transcribe", help="create word-timestamp transcripts")
     transcribe.add_argument("manifest", type=Path)
     transcribe.add_argument("--model", default="small")
@@ -88,7 +91,9 @@ def main(argv=None):
             manifest = {"recordings": "recordings.csv", "tokens": "tokens.csv"}
         recording_path = root / manifest["recordings"]
         existing = _read_csv(recording_path) if recording_path.exists() else []
-        additions = collect_youtube(args.urls, root, speaker_id=args.speaker_id, yt_dlp=args.yt_dlp)
+        additions = collect_youtube(args.urls, root, speaker_id=args.speaker_id,
+                                    yt_dlp=args.yt_dlp, max_videos=args.max_videos,
+                                    date_after=args.date_after)
         by_id = {row["recording_id"]: row for row in existing}
         for row in additions:
             if row["recording_id"] in by_id and row != by_id[row["recording_id"]]:
@@ -100,7 +105,8 @@ def main(argv=None):
         if not token_path.exists():
             write_rows(token_path, [], TOKEN_FIELDS)
         manifest["collection"] = {"method": "yt-dlp", "collected_at": datetime.now(timezone.utc).isoformat(),
-                                  "recording_ids": sorted(by_id)}
+                                  "source_urls": args.urls, "max_videos": args.max_videos,
+                                  "date_after": args.date_after, "recording_ids": sorted(by_id)}
         args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         print(f"collected {len(additions)} recording(s)")
     elif args.command == "transcribe":

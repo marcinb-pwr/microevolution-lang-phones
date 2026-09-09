@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from microevolution.automatic import align_words, read_lexicon
+from microevolution.automatic import align_words, collect_youtube, read_lexicon
 from microevolution.compare import compare_models
 from microevolution.project import Project, ProjectError
 from test_project import make_project
@@ -48,3 +48,14 @@ def test_comparison_rejects_too_few_recordings(tmp_path):
     project = Project.load(make_project(tmp_path, recording_date="2020-01-01"))
     with pytest.raises(ProjectError, match="three dated recordings"):
         compare_models(project, phone="AE", iterations=2)
+
+
+@pytest.mark.parametrize("maximum,date_after,message", [
+    (0, None, "max_videos"),
+    (1, "last Tuesday", "date_after"),
+])
+def test_collection_rejects_unsafe_filters_before_downloading(
+        tmp_path, maximum, date_after, message):
+    with pytest.raises(ProjectError, match=message):
+        collect_youtube(["https://youtube.example/channel"], tmp_path,
+                        speaker_id="host", max_videos=maximum, date_after=date_after)
