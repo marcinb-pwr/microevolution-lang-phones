@@ -75,3 +75,36 @@ reports independent recordings. Token spread is not uncertainty in a mean, and
 neither an embedding nor a changing centroid alone establishes phonetic change.
 Recording/session clustering, lexical context, recording setup, and exclusion rates
 must be addressed by later inferential work.
+
+## Automated YouTube-to-comparison workflow
+
+Automation is optional because downloading and speech recognition have substantial
+system/model dependencies. Install it with `pip install -e '.[automatic]'`; `ffmpeg`
+must also be available to `yt-dlp`. Only collect material that you are permitted to
+download and retain. YouTube upload dates are stored as proxies, never represented
+as recording dates.
+
+```bash
+microevolution collect-youtube study/project.json --speaker-id speaker-a \
+  'https://www.youtube.com/watch?v=VIDEO_ID'
+microevolution transcribe study/project.json --model small --language en
+microevolution align study/project.json --lexicon cmudict.txt
+microevolution extract study/project.json
+microevolution compare study/project.json --phone AE --response f1_hz \
+  --iterations 5000 --seed 2024 --output study/AE-f1-models.json
+```
+
+Collection pins the source URL, audio hash, sample rate, and downloader metadata.
+Transcription preserves word timestamps in per-recording JSON sidecars. Alignment
+expands those words through a CMU-style pronunciation lexicon. Its within-word
+phone boundaries are proportional estimates marked `lexicon_projected`, **not**
+acoustic forced alignment; they therefore remain pending until review. Extraction
+then applies the existing Praat/Burg measurement and rejection rules.
+
+`compare` evaluates an intercept-only model against linear time. It first averages
+eligible tokens within each recording, permutes dates at the recording level for a
+finite-sample p-value, and resamples recordings for the slope interval. The seed,
+iteration count, model errors, effect estimate, and warning are written to JSON.
+This guards against token-level pseudoreplication but remains exploratory: it does
+not correct recording conditions, uncertain dates, lexical imbalance, or speaker
+sampling, and it cannot establish causal language change.
