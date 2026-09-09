@@ -75,3 +75,95 @@ reports independent recordings. Token spread is not uncertainty in a mean, and
 neither an embedding nor a changing centroid alone establishes phonetic change.
 Recording/session clustering, lexical context, recording setup, and exclusion rates
 must be addressed by later inferential work.
+
+## Automated YouTube-to-comparison workflow
+
+Automation is optional because downloading and speech recognition have substantial
+system/model dependencies. Install it with `pip install -e '.[automatic]'`; `ffmpeg`
+must also be available to `yt-dlp`. Only collect material that you are permitted to
+download and retain. YouTube upload dates are stored as proxies, never represented
+as recording dates.
+
+```bash
+microevolution collect-youtube study/project.json --speaker-id speaker-a \
+  'https://www.youtube.com/watch?v=VIDEO_ID'
+microevolution transcribe study/project.json --model small --language en
+microevolution align study/project.json --lexicon cmudict.txt
+microevolution extract study/project.json
+microevolution compare study/project.json --phone AE --response f1_hz \
+  --iterations 5000 --seed 2024 --output study/AE-f1-models.json
+```
+
+Collection pins the source URL, audio hash, sample rate, and downloader metadata.
+Transcription preserves word timestamps in per-recording JSON sidecars. Alignment
+expands those words through a CMU-style pronunciation lexicon. Its within-word
+phone boundaries are proportional estimates marked `lexicon_projected`, **not**
+acoustic forced alignment; they therefore remain pending until review. Extraction
+then applies the existing Praat/Burg measurement and rejection rules.
+
+`compare` evaluates an intercept-only model against linear time. It first averages
+eligible tokens within each recording, permutes dates at the recording level for a
+finite-sample p-value, and resamples recordings for the slope interval. The seed,
+iteration count, model errors, effect estimate, and warning are written to JSON.
+This guards against token-level pseudoreplication but remains exploratory: it does
+not correct recording conditions, uncertain dates, lexical imbalance, or speaker
+sampling, and it cannot establish causal language change.
+
+### Example: starting from a chess channel
+
+First identify what a “speaker” means for the study. If one presenter narrates all
+videos, use one stable speaker ID. If guests or multiple hosts occur, do **not**
+label the channel as one speaker: collect them into separate projects or correct
+the recording table before analysis. Start with a small sample from the channel's
+`/videos` page rather than downloading its entire archive:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e '.[automatic]'
+
+microevolution collect-youtube chess-study/project.json \
+  --speaker-id chess-host \
+  --max-videos 10 \
+  --date-after 2020-01-01 \
+  'https://www.youtube.com/@EXAMPLE_CHESS_CHANNEL/videos'
+```
+
+This creates `project.json`, `recordings.csv`, an initially empty `tokens.csv`, and
+one hashed WAV per video under `chess-study/audio/`. `--max-videos` applies per URL.
+Remove it only when you intentionally want every video. Re-running collection is
+safe when the downloaded metadata is unchanged, and individual watch URLs can be
+mixed with channel or playlist URLs.
+
+Next obtain a CMU-style pronunciation dictionary. Each line is a word followed by
+ARPAbet phones; for example:
+
+```text
+CHESS CH EH1 S
+GAMBIT G AE1 M B IH0 T
+KNIGHT N AY1 T
+```
+
+Then run the remaining stages:
+
+```bash
+microevolution transcribe chess-study/project.json --model small --language en
+microevolution align chess-study/project.json --lexicon chess-lexicon.txt
+microevolution validate chess-study/project.json
+microevolution extract chess-study/project.json
+microevolution compare chess-study/project.json --phone AE --response f1_hz \
+  --iterations 5000 --seed 2024 --output chess-study/AE-f1-models.json
+```
+
+Inspect `transcripts/*.json` after transcription and review generated phone tokens
+before interpreting results. Words missing from the dictionary are skipped. More
+importantly, Whisper timestamps are word-level and this pipeline only divides a
+word interval proportionally among its dictionary phones. For publishable acoustic
+work, replace or manually correct those boundaries using an acoustic forced aligner
+and record that method in the manifest.
+
+The comparison needs at least three dated videos spanning two upload dates. A chess
+channel can also change microphones, rooms, editing, content format, and guests over
+time; those changes may look like phonetic change. Treat output as a screening
+result, use actual recording dates when known, review speaker identity, and model
+recording conditions before making substantive claims.
