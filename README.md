@@ -100,6 +100,26 @@ microevolution compare study/project.json --phone AE --response f1_hz \
   --iterations 5000 --seed 2024 --output study/AE-f1-models.json
 ```
 
+YouTube changes its download requirements frequently. If collection reports that
+`yt-dlp` is out of date, update the environment that provides the executable:
+
+```bash
+python -m pip install --upgrade yt-dlp
+```
+
+If YouTube still responds with HTTP 403 or requires sign-in, an authorized local
+browser session can be supplied without exporting a cookie file:
+
+```bash
+microevolution collect-youtube study/project.json --speaker-id speaker-a \
+  --cookies-from-browser safari \
+  'https://www.youtube.com/watch?v=VIDEO_ID'
+```
+
+Chrome and Firefox are also accepted by `yt-dlp`. Close the browser first if its
+cookie database is locked. The project records only that browser cookies were
+used, not the browser/profile name or any cookie values. Never commit cookies.
+
 Collection pins the source URL, audio hash, sample rate, and downloader metadata.
 Transcription preserves word timestamps in per-recording JSON sidecars. Alignment
 expands those words through a CMU-style pronunciation lexicon. Its within-word

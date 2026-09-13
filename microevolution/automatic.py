@@ -25,7 +25,8 @@ def utc_run_id(prefix: str) -> str:
 
 def collect_youtube(urls: Iterable[str], root: Path, *, speaker_id: str,
                     yt_dlp: str = "yt-dlp", max_videos: int | None = None,
-                    date_after: str | None = None) -> list[dict[str, str]]:
+                    date_after: str | None = None,
+                    cookies_from_browser: str | None = None) -> list[dict[str, str]]:
     """Download video or channel URLs and return provenance-complete rows.
 
     yt-dlp's printed JSON is used rather than scraping YouTube pages. Existing
@@ -40,6 +41,8 @@ def collect_youtube(urls: Iterable[str], root: Path, *, speaker_id: str,
             date.fromisoformat(date_after)
         except ValueError as exc:
             raise ProjectError("date_after must use YYYY-MM-DD") from exc
+    if cookies_from_browser is not None and not cookies_from_browser.strip():
+        raise ProjectError("cookies_from_browser must name a browser")
     audio_dir = root / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -50,13 +53,24 @@ def collect_youtube(urls: Iterable[str], root: Path, *, speaker_id: str,
             command.extend(["--playlist-end", str(max_videos)])
         if date_after:
             command.extend(["--dateafter", date_after.replace("-", "")])
+        if cookies_from_browser:
+            command.extend(["--cookies-from-browser", cookies_from_browser])
         command.append(url)
         try:
             result = subprocess.run(command, check=True, text=True, capture_output=True)
         except FileNotFoundError as exc:
             raise ProjectError("yt-dlp is required for collection; install the 'automatic' extra") from exc
         except subprocess.CalledProcessError as exc:
-            raise ProjectError(f"yt-dlp failed for {url}: {exc.stderr.strip()}") from exc
+            stderr = (exc.stderr or "").strip()
+            hints = []
+            lowered = stderr.lower()
+            if "older than" in lowered or "update" in lowered:
+                hints.append("update yt-dlp (python -m pip install --upgrade yt-dlp)")
+            if "403" in lowered or "sign in" in lowered or "not a bot" in lowered:
+                hints.append("retry with --cookies-from-browser BROWSER (for example, chrome or safari)")
+            advice = f"\nSuggested action: {'; then '.join(hints)}." if hints else ""
+            detail = stderr or f"process exited with status {exc.returncode}"
+            raise ProjectError(f"yt-dlp failed for {url}: {detail}{advice}") from exc
         lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
         if not lines:
             raise ProjectError(f"yt-dlp returned no metadata for {url}")
