@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import subprocess
+import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,10 @@ def main(argv=None):
     compare.add_argument("--response", choices=["f1_hz", "f2_hz", "f0_hz", "duration_s"], default="f1_hz")
     compare.add_argument("--iterations", type=int, default=2000)
     compare.add_argument("--seed", type=int, default=0)
+    compare.add_argument("--speaker-id", help="required for projects with multiple speakers")
+    compare.add_argument("--reviews", type=Path, help="review database (default: reviews.sqlite3 beside manifest)")
+    compare.add_argument("--include-unverified", action="store_true",
+                         help="include automatic/unverified phone boundaries")
     compare.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.command == "validate":
@@ -51,20 +56,39 @@ def main(argv=None):
         print(f"valid: {len(project.recordings)} recordings, {len(project.tokens)} tokens")
     elif args.command == "extract":
         project = Project.load(args.manifest)
-        run_id = datetime.now(timezone.utc).strftime("praat-%Y%m%dT%H%M%SZ")
+        run_id = datetime.now(timezone.utc).strftime("praat-%Y%m%dT%H%M%S%fZ")
+        configuration = {"max_formant_hz": args.max_formant_hz, "window_s": args.window_s}
+        previous = project.manifest.get("run", {})
+        same_configuration = previous.get("configuration") == configuration
+        previous_inputs = previous.get("measurement_inputs", {})
+        measurement_inputs = {}
         measured = 0
         for token in project.tokens:
-            if token["f1_hz"] and not args.force:
-                continue
             rec = project.recording(token["recording_id"])
-            result = measure_interval(project.root / rec["local_audio_path"],
-                                      float(token["original_start_s"]), float(token["original_end_s"]),
-                                      max_formant_hz=args.max_formant_hz, window_s=args.window_s)
+            measurement_input = hashlib.sha256(json.dumps({
+                "audio_sha256": rec["audio_sha256"], "start": token["original_start_s"],
+                "end": token["original_end_s"], "configuration": configuration,
+            }, sort_keys=True).encode()).hexdigest()
+            measurement_inputs[token["token_id"]] = measurement_input
+            if (token["f1_hz"] and same_configuration
+                    and previous_inputs.get(token["token_id"]) == measurement_input and not args.force):
+                continue
+            try:
+                result = measure_interval(project.root / rec["local_audio_path"],
+                                          float(token["original_start_s"]), float(token["original_end_s"]),
+                                          max_formant_hz=args.max_formant_hz, window_s=args.window_s)
+            except Exception as exc:
+                result = {"f1_hz": None, "f2_hz": None, "f0_hz": None, "trajectory": [],
+                          "measurement_status": "rejected",
+                          "exclusion_reason": f"measurement_error:{type(exc).__name__}"}
             token.update(f1_hz=_text(result["f1_hz"]), f2_hz=_text(result["f2_hz"]),
                          f0_hz=_text(result["f0_hz"]), trajectory=trajectory_json(result),
                          exclusion_reason=result["exclusion_reason"], run_id=run_id)
             if result["measurement_status"] == "rejected":
                 token["review_status"] = "rejected"
+            else:
+                # A decision belongs to the previous measurement revision.
+                token["review_status"] = "pending"
             measured += 1
         token_path = project.root / project.manifest["tokens"]
         temporary = token_path.with_suffix(".csv.tmp")
@@ -76,9 +100,19 @@ def main(argv=None):
             revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         except (OSError, subprocess.CalledProcessError):
             revision = "unknown"
+        try:
+            import parselmouth
+            parselmouth_version = parselmouth.__version__
+        except (ImportError, AttributeError):
+            parselmouth_version = "unknown"
+        project.manifest["schema_version"] = 2
         project.manifest["run"] = {"run_id": run_id, "code_revision": revision,
             "measurement_method": "Praat Burg via praat-parselmouth",
-            "configuration": {"max_formant_hz": args.max_formant_hz, "window_s": args.window_s}}
+            "configuration": configuration,
+            "tool_versions": {"python": platform.python_version(),
+                              "praat_parselmouth": parselmouth_version},
+            "input_hashes": {r["recording_id"]: r["audio_sha256"] for r in project.recordings},
+            "measurement_inputs": measurement_inputs}
         Path(args.manifest).write_text(json.dumps(project.manifest, indent=2) + "\n", encoding="utf-8")
         print(f"{run_id}: processed {measured} token intervals")
     elif args.command == "collect-youtube":
@@ -148,8 +182,13 @@ def main(argv=None):
         print(f"{run_id}: aligned {len(tokens)} phone intervals")
     elif args.command == "compare":
         from .compare import compare_models
-        result = compare_models(Project.load(args.manifest), phone=args.phone,
-                                response=args.response, iterations=args.iterations, seed=args.seed)
+        from .project import ReviewStore
+        project = Project.load(args.manifest)
+        review_path = args.reviews or project.root / "reviews.sqlite3"
+        result = compare_models(project, phone=args.phone, response=args.response,
+                                iterations=args.iterations, seed=args.seed,
+                                reviews=ReviewStore(review_path), speaker_id=args.speaker_id,
+                                verified_only=not args.include_unverified)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

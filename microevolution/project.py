@@ -166,27 +166,72 @@ class ReviewStore:
                 token_id TEXT PRIMARY KEY, status TEXT NOT NULL,
                 reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS versioned_reviews (
+                token_id TEXT NOT NULL, token_revision TEXT NOT NULL,
+                status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (token_id, token_revision)
+            )""")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
 
-    def set(self, token_id: str, status: str, reason: str = "") -> None:
+    def set(self, token_id: str, status: str, reason: str = "", *, revision: str = "") -> None:
         if status not in {"pending", "accepted", "rejected"}:
             raise ProjectError(f"invalid review status: {status}")
         with self._connect() as db:
+            if revision:
+                db.execute("""INSERT INTO versioned_reviews(token_id, token_revision, status, reason)
+                    VALUES (?, ?, ?, ?) ON CONFLICT(token_id, token_revision) DO UPDATE SET
+                    status=excluded.status, reason=excluded.reason,
+                    updated_at=CURRENT_TIMESTAMP""", (token_id, revision, status, reason))
+                return
             db.execute("""INSERT INTO reviews(token_id, status, reason) VALUES (?, ?, ?)
                 ON CONFLICT(token_id) DO UPDATE SET status=excluded.status,
                 reason=excluded.reason, updated_at=CURRENT_TIMESTAMP""", (token_id, status, reason))
 
-    def all(self) -> dict[str, dict[str, str]]:
+    def all(self, revisions: dict[str, str] | None = None) -> dict[str, dict[str, str]]:
         with self._connect() as db:
-            rows = db.execute("SELECT token_id, status, reason, updated_at FROM reviews").fetchall()
+            if revisions is None:
+                rows = db.execute("SELECT token_id, status, reason, updated_at FROM reviews").fetchall()
+            else:
+                rows = db.execute("SELECT token_id, status, reason, updated_at, token_revision "
+                                  "FROM versioned_reviews").fetchall()
+                rows = [row[:4] for row in rows if revisions.get(row[0]) == row[4]]
         return {r[0]: {"review_status": r[1], "exclusion_reason": r[2], "reviewed_at": r[3]} for r in rows}
 
 
+def token_revision(project: Project, token: dict[str, str]) -> str:
+    """Identify the exact audio, interval, alignment and measurement reviewed."""
+    recording = project.recording(token["recording_id"])
+    identity = {"audio_sha256": recording["audio_sha256"],
+                "start": token["original_start_s"], "end": token["original_end_s"],
+                "alignment_quality": token["alignment_quality"], "run_id": token["run_id"]}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
 def merged_tokens(project: Project, reviews: ReviewStore) -> list[dict[str, str]]:
-    overrides = reviews.all()
-    return [{**token, **overrides.get(token["token_id"], {})} for token in project.tokens]
+    revisions = {t["token_id"]: token_revision(project, t) for t in project.tokens}
+    overrides = reviews.all(revisions)
+    return [{**token, "token_revision": revisions[token["token_id"]],
+             **overrides.get(token["token_id"], {})} for token in project.tokens]
+
+
+def select_tokens(project: Project, reviews: ReviewStore, *, speaker_id: str,
+                  phone: str | None = None, data_origin: str = "observed",
+                  statuses: tuple[str, ...] = ("accepted",),
+                  verified_only: bool = True) -> list[dict[str, str]]:
+    """Apply the same research-safe selection used by analysis and exports."""
+    recordings = {r["recording_id"]: r for r in project.recordings}
+    selected = []
+    for token in merged_tokens(project, reviews):
+        recording = recordings[token["recording_id"]]
+        verified = token["alignment_quality"].lower() in {"manual", "verified", "manually_verified"}
+        if (recording["speaker_id"] == speaker_id and token["data_origin"] == data_origin
+                and token["review_status"] in statuses and (phone is None or token["phone_label"] == phone)
+                and (verified or not verified_only)):
+            selected.append(token)
+    return selected
 
 
 def export_zip(project: Project, reviews: ReviewStore, selected_ids: Iterable[str]) -> bytes:
@@ -197,11 +242,13 @@ def export_zip(project: Project, reviews: ReviewStore, selected_ids: Iterable[st
     recordings = [r for r in project.recordings if r["recording_id"] in recording_ids]
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, rows in (("tokens.csv", tokens), ("recordings.csv", recordings)):
+        for name, rows, base_fields in (("tokens.csv", tokens, sorted(TOKEN_FIELDS)),
+                                        ("recordings.csv", recordings, sorted(RECORDING_FIELDS))):
             buffer = io.StringIO()
-            if rows:
-                writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
-                writer.writeheader(); writer.writerows(rows)
+            extra_fields = [field for row in rows for field in row if field not in base_fields]
+            fields = base_fields + list(dict.fromkeys(extra_fields))
+            writer = csv.DictWriter(buffer, fieldnames=fields)
+            writer.writeheader(); writer.writerows(rows)
             archive.writestr(name, buffer.getvalue())
         archive.writestr("run.json", json.dumps(project.manifest.get("run", {}), indent=2))
         archive.writestr("selection.json", json.dumps({"token_ids": sorted(wanted)}, indent=2))

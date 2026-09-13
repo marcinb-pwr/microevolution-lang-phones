@@ -141,7 +141,7 @@ with st.form("review"):
                       index=["pending", "accepted", "rejected"].index(token["review_status"]), horizontal=True)
     reason = st.text_input("Reason / correction note", token.get("exclusion_reason", ""))
     if st.form_submit_button("Save review"):
-        reviews.set(token_id, status, reason)
+        reviews.set(token_id, status, reason, revision=token["token_revision"])
         st.success("Saved persistently. Reloading counts and aggregates…")
         st.rerun()
 

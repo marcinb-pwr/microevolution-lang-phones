@@ -47,7 +47,11 @@ microevolution validate path/to/project.json
 microevolution extract path/to/project.json --max-formant-hz 5500 --window-s 0.025
 ```
 
-Extraction records a run identifier, code revision, method, and settings. It stores
+Extraction records a schema version, run identifier, code revision, tool versions,
+settings, audio hashes, and per-token input fingerprints. A changed interval,
+audio file, or configuration is remeasured rather than silently retaining stale
+values. One failed interval does not abort the batch, and unavailable F0 does not
+discard usable F1/F2. It stores
 five relative-position track samples and the median of the central three. Intervals
 shorter than 40 ms, silence/near-silence, and intervals without trackable F1/F2 are
 explicitly rejected with missing acoustic values. Use `--force` only when deliberately
@@ -62,8 +66,10 @@ comparison and selected configuration, then freeze it before the main extraction
 Automated tests verify data integrity and audio coordinate behavior; they are not a
 claim of acoustic agreement with an external Praat calibration set.
 
-Review choices are stored in `reviews.sqlite3` beside the manifest and survive app
-restarts. Exports contain exactly the current filtered token IDs, the referenced
+Review choices are stored in `reviews.sqlite3` beside the manifest, are tied to the
+specific audio/interval/measurement revision, and survive app restarts. Changing a
+boundary or remeasuring therefore returns that token to pending review. Exports
+contain exactly the current filtered token IDs, the referenced
 recordings, review overrides, selection metadata, and the run record. Audio itself
 is intentionally not duplicated into exports; its path and pinned hash remain in
 the recording table.
@@ -101,8 +107,10 @@ phone boundaries are proportional estimates marked `lexicon_projected`, **not**
 acoustic forced alignment; they therefore remain pending until review. Extraction
 then applies the existing Praat/Burg measurement and rejection rules.
 
-`compare` evaluates an intercept-only model against linear time. It first averages
-eligible tokens within each recording, permutes dates at the recording level for a
+`compare` evaluates an intercept-only model against linear time. By default it only
+uses accepted, observed tokens with manually verified boundaries for one speaker;
+use `--speaker-id` in a multi-speaker project and `--include-unverified` only for an
+explicit exploratory run. It first averages eligible tokens within each recording, permutes dates at the recording level for a
 finite-sample p-value, and resamples recordings for the slope interval. The seed,
 iteration count, model errors, effect estimate, and warning are written to JSON.
 This guards against token-level pseudoreplication but remains exploratory: it does
