@@ -6,7 +6,7 @@ import pytest
 
 from microevolution.automatic import align_words, collect_youtube, read_lexicon
 from microevolution.compare import compare_models
-from microevolution.project import Project, ProjectError
+from microevolution.project import Project, ProjectError, ReviewStore, token_revision
 from test_project import make_project
 
 
@@ -38,8 +38,11 @@ def test_model_comparison_is_reproducible_and_recording_level(tmp_path):
         with path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=rows[0]); writer.writeheader(); writer.writerows(rows)
     project = Project.load(manifest)
-    first = compare_models(project, phone="AE", iterations=50, seed=7)
-    assert first == compare_models(project, phone="AE", iterations=50, seed=7)
+    reviews = ReviewStore(tmp_path / "reviews.sqlite3")
+    for token in project.tokens:
+        reviews.set(token["token_id"], "accepted", revision=token_revision(project, token))
+    first = compare_models(project, phone="AE", iterations=50, seed=7, reviews=reviews)
+    assert first == compare_models(project, phone="AE", iterations=50, seed=7, reviews=reviews)
     assert first["n_recordings"] == 3
     assert first["slope_per_year"] > 0
 

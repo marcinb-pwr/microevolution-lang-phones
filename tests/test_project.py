@@ -5,7 +5,8 @@ import wave
 
 import pytest
 
-from microevolution.project import Project, ProjectError, ReviewStore, export_zip, merged_tokens
+from microevolution.project import (Project, ProjectError, ReviewStore, export_zip,
+                                    merged_tokens, token_revision)
 
 
 def make_project(tmp_path, *, recording_date="", start="0.1", end="0.2"):
@@ -39,7 +40,8 @@ def test_missing_date_remains_none_and_context_is_original_audio(tmp_path):
 
 def test_review_survives_reopening_and_export_keeps_ids(tmp_path):
     project = Project.load(make_project(tmp_path))
-    ReviewStore(tmp_path / "reviews.db").set("t1", "accepted", "checked")
+    ReviewStore(tmp_path / "reviews.db").set(
+        "t1", "accepted", "checked", revision=token_revision(project, project.tokens[0]))
     reopened = ReviewStore(tmp_path / "reviews.db")
     assert merged_tokens(project, reopened)[0]["review_status"] == "accepted"
     import zipfile, io
@@ -48,8 +50,29 @@ def test_review_survives_reopening_and_export_keeps_ids(tmp_path):
         assert json.loads(exported.read("run.json"))["run_id"] == "run1"
 
 
+def test_export_has_stable_schema_for_partially_reviewed_selection(tmp_path):
+    project = Project.load(make_project(tmp_path))
+    second = dict(project.tokens[0], token_id="t2", original_start_s="0.3", original_end_s="0.4")
+    project.tokens.append(second)
+    reviews = ReviewStore(tmp_path / "reviews.db")
+    reviews.set("t1", "accepted", revision=token_revision(project, project.tokens[0]))
+    import zipfile, io
+    with zipfile.ZipFile(io.BytesIO(export_zip(project, reviews, ["t1", "t2"]))) as exported:
+        rows = list(csv.DictReader(io.StringIO(exported.read("tokens.csv").decode())))
+    assert len(rows) == 2
+    assert {"reviewed_at", "token_revision"} <= rows[0].keys()
+    assert rows[1]["reviewed_at"] == ""
+
+
+def test_review_is_invalidated_when_interval_changes(tmp_path):
+    project = Project.load(make_project(tmp_path))
+    reviews = ReviewStore(tmp_path / "reviews.db")
+    reviews.set("t1", "accepted", revision=token_revision(project, project.tokens[0]))
+    project.tokens[0]["original_end_s"] = "0.25"
+    assert merged_tokens(project, reviews)[0]["review_status"] == "pending"
+
+
 @pytest.mark.parametrize("start,end", [("0.3", "0.2"), ("-1", "0.2")])
 def test_invalid_intervals_rejected(tmp_path, start, end):
     with pytest.raises(ProjectError, match="interval"):
         Project.load(make_project(tmp_path, start=start, end=end))
-

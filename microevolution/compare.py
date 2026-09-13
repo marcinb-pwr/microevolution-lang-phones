@@ -6,7 +6,7 @@ from datetime import date
 import random
 from statistics import mean
 
-from .project import Project, ProjectError
+from .project import Project, ProjectError, ReviewStore, select_tokens
 
 
 def _fit(x: list[float], y: list[float]) -> tuple[float, float, float]:
@@ -31,7 +31,9 @@ def _quantile(values: list[float], probability: float) -> float:
 
 
 def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
-                   iterations: int = 2000, seed: int = 0) -> dict:
+                   iterations: int = 2000, seed: int = 0,
+                   reviews: ReviewStore | None = None, speaker_id: str | None = None,
+                   data_origin: str = "observed", verified_only: bool = True) -> dict:
     """Compare intercept-only and linear-time models by cluster permutation.
 
     Each recording contributes one mean, preventing recordings with many tokens
@@ -42,9 +44,16 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
         raise ProjectError(f"unsupported response: {response}")
     if iterations < 1:
         raise ProjectError("iterations must be positive")
+    speakers = sorted({r["speaker_id"] for r in project.recordings})
+    if speaker_id is None:
+        if len(speakers) != 1:
+            raise ProjectError("speaker_id is required when a project contains multiple speakers")
+        speaker_id = speakers[0]
+    reviews = reviews or ReviewStore(project.root / "reviews.sqlite3")
     values: dict[str, list[float]] = {}
-    for token in project.tokens:
-        if token["phone_label"] == phone and token[response] and token["review_status"] != "rejected":
+    for token in select_tokens(project, reviews, speaker_id=speaker_id, phone=phone,
+                               data_origin=data_origin, verified_only=verified_only):
+        if token[response]:
             values.setdefault(token["recording_id"], []).append(float(token[response]))
     rows = []
     for recording_id, measurements in values.items():
