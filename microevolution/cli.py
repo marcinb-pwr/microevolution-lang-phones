@@ -31,6 +31,11 @@ def main(argv=None):
     collect.add_argument("--max-videos", type=int,
                          help="maximum videos per channel/playlist (recommended for pilots)")
     collect.add_argument("--date-after", help="only videos uploaded on/after YYYY-MM-DD")
+    collect.add_argument(
+        "--cookies-from-browser",
+        metavar="BROWSER[+KEYRING][:PROFILE][::CONTAINER]",
+        help="let yt-dlp use an existing browser login (use only when authorized)",
+    )
     transcribe = sub.add_parser("transcribe", help="create word-timestamp transcripts")
     transcribe.add_argument("manifest", type=Path)
     transcribe.add_argument("--model", default="small")
@@ -127,7 +132,8 @@ def main(argv=None):
         existing = _read_csv(recording_path) if recording_path.exists() else []
         additions = collect_youtube(args.urls, root, speaker_id=args.speaker_id,
                                     yt_dlp=args.yt_dlp, max_videos=args.max_videos,
-                                    date_after=args.date_after)
+                                    date_after=args.date_after,
+                                    cookies_from_browser=args.cookies_from_browser)
         by_id = {row["recording_id"]: row for row in existing}
         for row in additions:
             if row["recording_id"] in by_id and row != by_id[row["recording_id"]]:
@@ -140,7 +146,9 @@ def main(argv=None):
             write_rows(token_path, [], TOKEN_FIELDS)
         manifest["collection"] = {"method": "yt-dlp", "collected_at": datetime.now(timezone.utc).isoformat(),
                                   "source_urls": args.urls, "max_videos": args.max_videos,
-                                  "date_after": args.date_after, "recording_ids": sorted(by_id)}
+                                  "date_after": args.date_after,
+                                  "browser_cookies_used": bool(args.cookies_from_browser),
+                                  "recording_ids": sorted(by_id)}
         args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         print(f"collected {len(additions)} recording(s)")
     elif args.command == "transcribe":

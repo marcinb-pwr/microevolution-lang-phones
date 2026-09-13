@@ -1,6 +1,7 @@
 import csv
 import json
 import shutil
+import subprocess
 
 import pytest
 
@@ -62,3 +63,27 @@ def test_collection_rejects_unsafe_filters_before_downloading(
     with pytest.raises(ProjectError, match=message):
         collect_youtube(["https://youtube.example/channel"], tmp_path,
                         speaker_id="host", max_videos=maximum, date_after=date_after)
+
+
+def test_collection_adds_browser_cookies_to_downloader_command(tmp_path, monkeypatch):
+    def fail(command, **kwargs):
+        assert command[-3:] == ["--cookies-from-browser", "safari", "https://youtube.example/watch"]
+        raise subprocess.CalledProcessError(1, command, stderr="download failed")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(ProjectError, match="download failed"):
+        collect_youtube(["https://youtube.example/watch"], tmp_path,
+                        speaker_id="host", cookies_from_browser="safari")
+
+
+def test_collection_explains_outdated_yt_dlp_403(tmp_path, monkeypatch):
+    def fail(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr="WARNING: version is older than 90 days\nHTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(ProjectError) as caught:
+        collect_youtube(["https://youtube.example/watch"], tmp_path, speaker_id="host")
+    message = str(caught.value)
+    assert "pip install --upgrade yt-dlp" in message
+    assert "--cookies-from-browser BROWSER" in message
