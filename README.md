@@ -125,7 +125,8 @@ Transcription preserves word timestamps in per-recording JSON sidecars. Alignmen
 expands those words through a CMU-style pronunciation lexicon. Its within-word
 phone boundaries are proportional estimates marked `lexicon_projected`, **not**
 acoustic forced alignment; they therefore remain pending until review. Extraction
-then applies the existing Praat/Burg measurement and rejection rules.
+then applies the existing Praat/Burg measurement and rejection rules. To avoid
+repeatedly decoding long audio files, extraction loads each recording only once.
 
 `compare` evaluates an intercept-only model against linear time. By default it only
 uses accepted, observed tokens with manually verified boundaries for one speaker;

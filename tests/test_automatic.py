@@ -54,6 +54,12 @@ def test_comparison_rejects_too_few_recordings(tmp_path):
         compare_models(project, phone="AE", iterations=2)
 
 
+def test_comparison_reports_unknown_phone_and_available_labels(tmp_path):
+    project = Project.load(make_project(tmp_path, recording_date="2020-01-01"))
+    with pytest.raises(ProjectError, match=r"phone 'A01'.*available phones: AE"):
+        compare_models(project, phone="A01", iterations=2)
+
+
 @pytest.mark.parametrize("maximum,date_after,message", [
     (0, None, "max_videos"),
     (1, "last Tuesday", "date_after"),

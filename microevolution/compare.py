@@ -50,6 +50,10 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
             raise ProjectError("speaker_id is required when a project contains multiple speakers")
         speaker_id = speakers[0]
     reviews = reviews or ReviewStore(project.root / "reviews.sqlite3")
+    requested = [t for t in project.tokens if t["phone_label"] == phone]
+    if not requested:
+        available = ", ".join(sorted({t["phone_label"] for t in project.tokens}))
+        raise ProjectError(f"phone {phone!r} does not occur in the token table; available phones: {available}")
     values: dict[str, list[float]] = {}
     for token in select_tokens(project, reviews, speaker_id=speaker_id, phone=phone,
                                data_origin=data_origin, verified_only=verified_only):
@@ -62,7 +66,18 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
         if when:
             rows.append((recording_id, when, mean(measurements), len(measurements)))
     if len(rows) < 3 or len({r[1] for r in rows}) < 2:
-        raise ProjectError("model comparison requires at least three dated recordings and two dates")
+        statuses = {}
+        for token in requested:
+            statuses[token["review_status"]] = statuses.get(token["review_status"], 0) + 1
+        status_summary = ", ".join(f"{key}={value}" for key, value in sorted(statuses.items()))
+        raise ProjectError(
+            "model comparison requires at least three dated recordings and two dates after "
+            "eligibility filtering; "
+            f"found {len(rows)} eligible recording(s) for {phone!r}. Token review statuses: "
+            f"{status_summary or 'none'}. By default only accepted tokens with manually verified "
+            "boundaries are eligible; review tokens first, or use --include-unverified only after "
+            "accepting projected boundaries."
+        )
     origin = min(r[1] for r in rows)
     x = [(r[1] - origin).days / 365.2425 for r in rows]
     y = [r[2] for r in rows]
