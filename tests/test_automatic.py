@@ -48,6 +48,36 @@ def test_model_comparison_is_reproducible_and_recording_level(tmp_path):
     assert first["slope_per_year"] > 0
 
 
+def test_exploratory_comparison_can_include_pending_projected_tokens(tmp_path):
+    manifest = make_project(tmp_path, recording_date="2020-01-01")
+    rec_path, tok_path = tmp_path / "recordings.csv", tmp_path / "tokens.csv"
+    with rec_path.open(newline="") as handle:
+        recordings = list(csv.DictReader(handle))
+    with tok_path.open(newline="") as handle:
+        tokens = list(csv.DictReader(handle))
+    tokens[0]["alignment_quality"] = "lexicon_projected"
+    for index, (when, value) in enumerate((("2021-01-01", "710"),
+                                           ("2022-01-01", "730")), 2):
+        shutil.copy(tmp_path / "source.wav", tmp_path / f"source{index}.wav")
+        recordings.append(dict(recordings[0], recording_id=f"r{index}",
+                               local_audio_path=f"source{index}.wav",
+                               recording_date=when, session_id=f"session{index}"))
+        tokens.append(dict(tokens[0], token_id=f"t{index}", recording_id=f"r{index}",
+                           f1_hz=value))
+    for path, rows in ((rec_path, recordings), (tok_path, tokens)):
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=rows[0])
+            writer.writeheader()
+            writer.writerows(rows)
+
+    result = compare_models(Project.load(manifest), phone="AE", iterations=10,
+                            include_pending=True, verified_only=False)
+
+    assert result["n_recordings"] == 3
+    assert result["included_review_statuses"] == ["accepted", "pending"]
+    assert result["included_unverified_boundaries"] is True
+
+
 def test_comparison_rejects_too_few_recordings(tmp_path):
     project = Project.load(make_project(tmp_path, recording_date="2020-01-01"))
     with pytest.raises(ProjectError, match="three dated recordings"):

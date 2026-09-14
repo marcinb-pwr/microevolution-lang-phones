@@ -54,6 +54,8 @@ def main(argv=None):
     compare.add_argument("--reviews", type=Path, help="review database (default: reviews.sqlite3 beside manifest)")
     compare.add_argument("--include-unverified", action="store_true",
                          help="include automatic/unverified phone boundaries")
+    compare.add_argument("--include-pending", action="store_true",
+                         help="include measured tokens not yet accepted (exploratory only)")
     compare.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.command == "validate":
@@ -208,7 +210,8 @@ def main(argv=None):
         result = compare_models(project, phone=args.phone, response=args.response,
                                 iterations=args.iterations, seed=args.seed,
                                 reviews=ReviewStore(review_path), speaker_id=args.speaker_id,
-                                verified_only=not args.include_unverified)
+                                verified_only=not args.include_unverified,
+                                include_pending=args.include_pending)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -6,7 +6,7 @@ from datetime import date
 import random
 from statistics import mean
 
-from .project import Project, ProjectError, ReviewStore, select_tokens
+from .project import Project, ProjectError, ReviewStore, merged_tokens, select_tokens
 
 
 def _fit(x: list[float], y: list[float]) -> tuple[float, float, float]:
@@ -33,7 +33,8 @@ def _quantile(values: list[float], probability: float) -> float:
 def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
                    iterations: int = 2000, seed: int = 0,
                    reviews: ReviewStore | None = None, speaker_id: str | None = None,
-                   data_origin: str = "observed", verified_only: bool = True) -> dict:
+                   data_origin: str = "observed", verified_only: bool = True,
+                   include_pending: bool = False) -> dict:
     """Compare intercept-only and linear-time models by cluster permutation.
 
     Each recording contributes one mean, preventing recordings with many tokens
@@ -50,13 +51,17 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
             raise ProjectError("speaker_id is required when a project contains multiple speakers")
         speaker_id = speakers[0]
     reviews = reviews or ReviewStore(project.root / "reviews.sqlite3")
-    requested = [t for t in project.tokens if t["phone_label"] == phone]
+    requested = [t for t in merged_tokens(project, reviews)
+                 if t["phone_label"] == phone and t["data_origin"] == data_origin
+                 and project.recording(t["recording_id"])["speaker_id"] == speaker_id]
     if not requested:
         available = ", ".join(sorted({t["phone_label"] for t in project.tokens}))
         raise ProjectError(f"phone {phone!r} does not occur in the token table; available phones: {available}")
     values: dict[str, list[float]] = {}
+    statuses = ("accepted", "pending") if include_pending else ("accepted",)
     for token in select_tokens(project, reviews, speaker_id=speaker_id, phone=phone,
-                               data_origin=data_origin, verified_only=verified_only):
+                               data_origin=data_origin, statuses=statuses,
+                               verified_only=verified_only):
         if token[response]:
             values.setdefault(token["recording_id"], []).append(float(token[response]))
     rows = []
@@ -66,17 +71,19 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
         if when:
             rows.append((recording_id, when, mean(measurements), len(measurements)))
     if len(rows) < 3 or len({r[1] for r in rows}) < 2:
-        statuses = {}
+        status_counts = {}
         for token in requested:
-            statuses[token["review_status"]] = statuses.get(token["review_status"], 0) + 1
-        status_summary = ", ".join(f"{key}={value}" for key, value in sorted(statuses.items()))
+            status = token["review_status"]
+            status_counts[status] = status_counts.get(status, 0) + 1
+        status_summary = ", ".join(
+            f"{key}={value}" for key, value in sorted(status_counts.items()))
         raise ProjectError(
             "model comparison requires at least three dated recordings and two dates after "
             "eligibility filtering; "
             f"found {len(rows)} eligible recording(s) for {phone!r}. Token review statuses: "
             f"{status_summary or 'none'}. By default only accepted tokens with manually verified "
-            "boundaries are eligible; review tokens first, or use --include-unverified only after "
-            "accepting projected boundaries."
+            "boundaries are eligible. Review tokens first, or, for an explicitly exploratory "
+            "analysis of automatic output, pass both --include-pending and --include-unverified."
         )
     origin = min(r[1] for r in rows)
     x = [(r[1] - origin).days / 365.2425 for r in rows]
@@ -102,4 +109,6 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
             "temporal_sse": temporal_sse, "sse_improvement": improvement,
             "permutation_p_value": (1 + sum(v >= improvement for v in permuted)) / (iterations + 1),
             "iterations": iterations, "seed": seed,
+            "included_review_statuses": list(statuses),
+            "included_unverified_boundaries": not verified_only,
             "caution": "Exploratory recording-level comparison; upload dates may be proxies."}
