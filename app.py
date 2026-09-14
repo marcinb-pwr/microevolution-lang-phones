@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import io
 import json
 import wave
@@ -67,8 +68,17 @@ with left:
     if df.empty:
         st.info("No dated measured tokens in this selection.")
     else:
-        long = df.melt(id_vars=["token_id", "effective_date", "word", "recording_id"],
-                       value_vars=["f1_hz", "f2_hz"], var_name="measure", value_name="Hz")
+        word_counts = Counter(df["word"])
+        timeline_words = sorted(word_counts, key=lambda word: (-word_counts[word], word))
+        timeline_word = st.selectbox(
+            "Filter timeline by word",
+            [None, *timeline_words],
+            format_func=lambda word: "All words" if word is None else f"{word} ({word_counts[word]})",
+            help="Words are ordered by the number of occurrences in the current selection.",
+        )
+        timeline_df = df if timeline_word is None else df[df["word"] == timeline_word]
+        long = timeline_df.melt(id_vars=["token_id", "effective_date", "word", "recording_id"],
+                                value_vars=["f1_hz", "f2_hz"], var_name="measure", value_name="Hz")
         fig = px.scatter(long, x="effective_date", y="Hz", color="measure", symbol="word",
                          hover_data=["token_id", "recording_id"], trendline=None)
         st.plotly_chart(fig, use_container_width=True)
@@ -78,8 +88,14 @@ with right:
     if measured.empty:
         st.info("No valid F1/F2 pairs in this selection.")
     else:
-        fig = px.scatter(measured, x="f2_hz", y="f1_hz", color="word",
-                         hover_data=["token_id", "recording_id", "date_display"])
+        measured = measured.assign(date=measured["effective_date"].dt.strftime("%Y-%m-%d"))
+        dates = sorted(measured["date"].unique())
+        fig = px.scatter(
+            measured, x="f2_hz", y="f1_hz", color="date",
+            category_orders={"date": dates},
+            hover_data=["word", "token_id", "recording_id", "date_display"],
+            labels={"date": "Effective date"},
+        )
         fig.update_xaxes(autorange="reversed", title="F2 (Hz; decreases →)")
         fig.update_yaxes(autorange="reversed", title="F1 (Hz; increases ↓)")
         st.plotly_chart(fig, use_container_width=True)
@@ -95,7 +111,11 @@ st.write(f"**{token['word']}** /{token['phone_label']}/ · {token['date_display'
          f"original interval {float(token['original_start_s']):.3f}–{float(token['original_end_s']):.3f} s · "
          f"recording `{rec['recording_id']}`")
 context = project.context_wav(token, padding_s=0.5)
+selected_audio = project.context_wav(token, padding_s=0)
+st.caption("Full playback excerpt")
 st.audio(context, format="audio/wav")
+st.caption("Selected vowel interval (yellow region)")
+st.audio(selected_audio, format="audio/wav")
 
 with wave.open(io.BytesIO(context), "rb") as wav:
     rate, channels, width = wav.getframerate(), wav.getnchannels(), wav.getsampwidth()
