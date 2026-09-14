@@ -9,7 +9,7 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .measure import measure_interval, trajectory_json
+from .measure import measure_sound_interval, trajectory_json
 from .project import Project, ProjectError, _read_csv
 
 
@@ -54,6 +54,8 @@ def main(argv=None):
     compare.add_argument("--reviews", type=Path, help="review database (default: reviews.sqlite3 beside manifest)")
     compare.add_argument("--include-unverified", action="store_true",
                          help="include automatic/unverified phone boundaries")
+    compare.add_argument("--include-pending", action="store_true",
+                         help="include measured tokens not yet accepted (exploratory only)")
     compare.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.command == "validate":
@@ -68,6 +70,7 @@ def main(argv=None):
         previous_inputs = previous.get("measurement_inputs", {})
         measurement_inputs = {}
         measured = 0
+        pending_by_recording = {}
         for token in project.tokens:
             rec = project.recording(token["recording_id"])
             measurement_input = hashlib.sha256(json.dumps({
@@ -78,23 +81,34 @@ def main(argv=None):
             if (token["f1_hz"] and same_configuration
                     and previous_inputs.get(token["token_id"]) == measurement_input and not args.force):
                 continue
+            pending_by_recording.setdefault(token["recording_id"], []).append(token)
+        import parselmouth
+        for recording_id, tokens in pending_by_recording.items():
+            rec = project.recording(recording_id)
             try:
-                result = measure_interval(project.root / rec["local_audio_path"],
-                                          float(token["original_start_s"]), float(token["original_end_s"]),
-                                          max_formant_hz=args.max_formant_hz, window_s=args.window_s)
+                sound = parselmouth.Sound(str(project.root / rec["local_audio_path"]))
             except Exception as exc:
-                result = {"f1_hz": None, "f2_hz": None, "f0_hz": None, "trajectory": [],
-                          "measurement_status": "rejected",
-                          "exclusion_reason": f"measurement_error:{type(exc).__name__}"}
-            token.update(f1_hz=_text(result["f1_hz"]), f2_hz=_text(result["f2_hz"]),
-                         f0_hz=_text(result["f0_hz"]), trajectory=trajectory_json(result),
-                         exclusion_reason=result["exclusion_reason"], run_id=run_id)
-            if result["measurement_status"] == "rejected":
-                token["review_status"] = "rejected"
-            else:
-                # A decision belongs to the previous measurement revision.
-                token["review_status"] = "pending"
-            measured += 1
+                sound = None
+                load_error = exc
+            for token in tokens:
+                try:
+                    if sound is None:
+                        raise load_error
+                    result = measure_sound_interval(
+                        sound, float(token["original_start_s"]), float(token["original_end_s"]),
+                        max_formant_hz=args.max_formant_hz, window_s=args.window_s)
+                except Exception as exc:
+                    result = {"f1_hz": None, "f2_hz": None, "f0_hz": None, "trajectory": [],
+                              "measurement_status": "rejected",
+                              "exclusion_reason": f"measurement_error:{type(exc).__name__}"}
+                token.update(f1_hz=_text(result["f1_hz"]), f2_hz=_text(result["f2_hz"]),
+                             f0_hz=_text(result["f0_hz"]), trajectory=trajectory_json(result),
+                             exclusion_reason=result["exclusion_reason"], run_id=run_id)
+                if result["measurement_status"] == "rejected":
+                    token["review_status"] = "rejected"
+                else:
+                    token["review_status"] = "pending"
+                measured += 1
         token_path = project.root / project.manifest["tokens"]
         temporary = token_path.with_suffix(".csv.tmp")
         with temporary.open("w", newline="", encoding="utf-8") as handle:
@@ -196,7 +210,8 @@ def main(argv=None):
         result = compare_models(project, phone=args.phone, response=args.response,
                                 iterations=args.iterations, seed=args.seed,
                                 reviews=ReviewStore(review_path), speaker_id=args.speaker_id,
-                                verified_only=not args.include_unverified)
+                                verified_only=not args.include_unverified,
+                                include_pending=args.include_pending)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

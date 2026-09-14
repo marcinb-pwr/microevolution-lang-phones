@@ -97,7 +97,8 @@ microevolution transcribe study/project.json --model small --language en
 microevolution align study/project.json --lexicon cmudict.txt
 microevolution extract study/project.json
 microevolution compare study/project.json --phone AE --response f1_hz \
-  --iterations 5000 --seed 2024 --output study/AE-f1-models.json
+  --iterations 5000 --seed 2024 --include-pending --include-unverified \
+  --output study/AE-f1-models.json
 ```
 
 YouTube changes its download requirements frequently. If collection reports that
@@ -125,7 +126,13 @@ Transcription preserves word timestamps in per-recording JSON sidecars. Alignmen
 expands those words through a CMU-style pronunciation lexicon. Its within-word
 phone boundaries are proportional estimates marked `lexicon_projected`, **not**
 acoustic forced alignment; they therefore remain pending until review. Extraction
-then applies the existing Praat/Burg measurement and rejection rules.
+then applies the existing Praat/Burg measurement and rejection rules. To avoid
+repeatedly decoding long audio files, extraction loads each recording only once.
+
+The example comparison is explicitly exploratory: `--include-pending` admits
+measured tokens that have not been reviewed, while `--include-unverified` admits
+the projected phone boundaries. Omit those flags after reviewing and accepting
+tokens in the Streamlit app.
 
 `compare` evaluates an intercept-only model against linear time. By default it only
 uses accepted, observed tokens with manually verified boundaries for one speaker;

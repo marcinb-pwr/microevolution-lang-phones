@@ -12,12 +12,21 @@ def measure_interval(audio_path: str | Path, start_s: float, end_s: float,
     """Measure central F1/F2 and a five-point trajectory using Praat's Burg method."""
     import parselmouth
 
+    sound = parselmouth.Sound(str(audio_path))
+    return measure_sound_interval(sound, start_s, end_s,
+                                  max_formant_hz=max_formant_hz, window_s=window_s)
+
+
+def measure_sound_interval(sound, start_s: float, end_s: float,
+                           *, max_formant_hz: float = 5500,
+                           window_s: float = 0.025) -> dict:
+    """Measure an interval from an already-loaded parselmouth Sound."""
     result = {"f1_hz": None, "f2_hz": None, "f0_hz": None, "trajectory": [],
               "measurement_status": "rejected", "exclusion_reason": ""}
     if start_s < 0 or end_s <= start_s:
         result["exclusion_reason"] = "invalid_interval"
         return result
-    sound = parselmouth.Sound(str(audio_path)).extract_part(start_s, end_s, preserve_times=False)
+    sound = sound.extract_part(start_s, end_s, preserve_times=False)
     if sound.duration < 0.04:
         result["exclusion_reason"] = "interval_too_short"
         return result
