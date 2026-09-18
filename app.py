@@ -84,7 +84,7 @@ with left:
         st.plotly_chart(fig, use_container_width=True)
 with right:
     st.subheader("Vowel space")
-    measured = df.dropna(subset=["f1_hz", "f2_hz"]) if not df.empty else df
+    measured = timeline_df.dropna(subset=["f1_hz", "f2_hz"]) if not df.empty else df
     if measured.empty:
         st.info("No valid F1/F2 pairs in this selection.")
     else:
