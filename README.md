@@ -183,22 +183,75 @@ Then run the remaining stages:
 
 ```bash
 microevolution transcribe chess-study/project.json --model small --language en
-microevolution align chess-study/project.json --lexicon chess-lexicon.txt
+microevolution align chess-study/project.json --backend projection --lexicon chess-lexicon.txt
 microevolution validate chess-study/project.json
 microevolution extract chess-study/project.json
 microevolution compare chess-study/project.json --phone AE --response f1_hz \
   --iterations 5000 --seed 2024 --output chess-study/AE-f1-models.json
 ```
 
-Inspect `transcripts/*.json` after transcription and review generated phone tokens
-before interpreting results. Words missing from the dictionary are skipped. More
-importantly, Whisper timestamps are word-level and this pipeline only divides a
-word interval proportionally among its dictionary phones. For publishable acoustic
-work, replace or manually correct those boundaries using an acoustic forced aligner
-and record that method in the manifest.
+This legacy reproduction path proportionally divides Whisper word timestamps and
+skips words absent from its small dictionary. It is retained for compatibility,
+not recommended for new acoustic work; use the MFA workflow below for production.
 
 The comparison needs at least three dated videos spanning two upload dates. A chess
 channel can also change microphones, rooms, editing, content format, and guests over
 time; those changes may look like phonetic change. Treat output as a screening
 result, use actual recording dates when known, review speaker identity, and model
 recording conditions before making substantive claims.
+
+## Automatic MFA alignment and continuous formants
+
+Production alignment uses Montreal Forced Aligner (MFA) 3.4.2 and English (US)
+ARPA acoustic model 3.0.0 with its matching dictionary. Install MFA in a separate conda environment (the
+Python package is intentionally not imported by this project), record the exact
+installed versions, then download the pinned model generation:
+
+```bash
+mfa model download acoustic english_us_arpa
+mfa model download dictionary english_us_arpa
+mfa version
+mfa model inspect acoustic english_us_arpa
+pip install -e '.[automatic,test]'
+```
+
+Use the full downloaded ARPA dictionary augmented only with ARPAbet-compatible
+chess pronunciations. Transcribe and align with:
+
+```bash
+microevolution transcribe project.json --model small --language en
+microevolution align project.json --backend mfa \
+  --lexicon /path/to/english_us_arpa.dict --acoustic-model english_us_arpa \
+  --retries 1 --fine-tune --force
+microevolution extract project.json
+microevolution compare project.json --phone AO --automatic-qc --output results/ao.json
+```
+
+`align` makes pause/length-bounded utterances, retains their exact source offsets,
+and restores MFA phone times to recording coordinates. It never marks a token as
+human verified. Automatic QC failures remain in `tokens.csv` with reasons. The
+legacy proportional method remains available only as `--backend projection` for
+reproduction of old results.
+
+Extraction constructs one continuous-recording Praat Formant object per recording;
+only RMS, duration, and pitch checks use the phone crop. This preserves real
+neighbouring waveform support for short phones. Every measurement input digest
+includes the audio hash, boundaries, alignment run, algorithm, and settings.
+Changing any of them invalidates the cached value. `project.json` retains append-only
+`alignment_runs` and `runs` provenance histories while keeping the former singular
+keys for older readers. Existing tables are migrated in memory; the new columns
+are written by the next alignment/extraction, so archived data need not be edited.
+
+To rerun the bundled demonstration exactly:
+
+```bash
+python demo/generate_audio.py
+microevolution validate demo/project.json
+microevolution extract demo/project.json --force
+pytest -q
+```
+
+The repository does not contain the seven original study WAVs. Run the four-way
+projection/MFA and crop/continuous validation on those secured originals before
+interpreting longitudinal results; the implementation and synthetic real-Praat
+regression can be validated without them.

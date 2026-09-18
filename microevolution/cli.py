@@ -9,7 +9,8 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .measure import measure_sound_interval, trajectory_json
+from .measure import (FORMANT_ALGORITHM_VERSION, RecordingMeasurements,
+                      measure_sound_interval, trajectory_json)
 from .project import Project, ProjectError, _read_csv
 
 
@@ -40,10 +41,15 @@ def main(argv=None):
     transcribe.add_argument("manifest", type=Path)
     transcribe.add_argument("--model", default="small")
     transcribe.add_argument("--language")
-    align = sub.add_parser("align", help="project word timestamps through a CMU lexicon")
+    align = sub.add_parser("align", help="align transcript phones (MFA is the production backend)")
     align.add_argument("manifest", type=Path)
     align.add_argument("--lexicon", type=Path, required=True)
     align.add_argument("--force", action="store_true")
+    align.add_argument("--backend", choices=["mfa", "projection"], default="mfa")
+    align.add_argument("--acoustic-model", default="english_us_arpa")
+    align.add_argument("--mfa-executable", default="mfa")
+    align.add_argument("--fine-tune", action="store_true")
+    align.add_argument("--retries", type=int, default=1)
     compare = sub.add_parser("compare", help="stochastically compare constant and temporal models")
     compare.add_argument("manifest", type=Path)
     compare.add_argument("--phone", required=True)
@@ -56,6 +62,8 @@ def main(argv=None):
                          help="include automatic/unverified phone boundaries")
     compare.add_argument("--include-pending", action="store_true",
                          help="include measured tokens not yet accepted (exploratory only)")
+    compare.add_argument("--automatic-qc", action="store_true",
+                         help="include measured tokens accepted by automatic alignment QC")
     compare.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     if args.command == "validate":
@@ -64,7 +72,8 @@ def main(argv=None):
     elif args.command == "extract":
         project = Project.load(args.manifest)
         run_id = datetime.now(timezone.utc).strftime("praat-%Y%m%dT%H%M%S%fZ")
-        configuration = {"max_formant_hz": args.max_formant_hz, "window_s": args.window_s}
+        configuration = {"max_formant_hz": args.max_formant_hz, "window_s": args.window_s,
+                         "time_step_s": 0.005, "algorithm": FORMANT_ALGORITHM_VERSION}
         previous = project.manifest.get("run", {})
         same_configuration = previous.get("configuration") == configuration
         previous_inputs = previous.get("measurement_inputs", {})
@@ -75,7 +84,8 @@ def main(argv=None):
             rec = project.recording(token["recording_id"])
             measurement_input = hashlib.sha256(json.dumps({
                 "audio_sha256": rec["audio_sha256"], "start": token["original_start_s"],
-                "end": token["original_end_s"], "configuration": configuration,
+                "end": token["original_end_s"], "alignment_run_id": token.get("alignment_run_id", ""),
+                "configuration": configuration,
             }, sort_keys=True).encode()).hexdigest()
             measurement_inputs[token["token_id"]] = measurement_input
             if (token["f1_hz"] and same_configuration
@@ -87,8 +97,10 @@ def main(argv=None):
             rec = project.recording(recording_id)
             try:
                 sound = parselmouth.Sound(str(project.root / rec["local_audio_path"]))
+                analysis = RecordingMeasurements(sound, max_formant_hz=args.max_formant_hz,
+                                                 window_s=args.window_s)
             except Exception as exc:
-                sound = None
+                sound = analysis = None
                 load_error = exc
             for token in tokens:
                 try:
@@ -96,14 +108,20 @@ def main(argv=None):
                         raise load_error
                     result = measure_sound_interval(
                         sound, float(token["original_start_s"]), float(token["original_end_s"]),
-                        max_formant_hz=args.max_formant_hz, window_s=args.window_s)
+                        max_formant_hz=args.max_formant_hz, window_s=args.window_s,
+                        formants=analysis.formants)
                 except Exception as exc:
                     result = {"f1_hz": None, "f2_hz": None, "f0_hz": None, "trajectory": [],
                               "measurement_status": "rejected",
                               "exclusion_reason": f"measurement_error:{type(exc).__name__}"}
                 token.update(f1_hz=_text(result["f1_hz"]), f2_hz=_text(result["f2_hz"]),
                              f0_hz=_text(result["f0_hz"]), trajectory=trajectory_json(result),
-                             exclusion_reason=result["exclusion_reason"], run_id=run_id)
+                             exclusion_reason=result["exclusion_reason"], run_id=run_id,
+                             measurement_status=result["measurement_status"],
+                             measurement_input_hash=measurement_inputs[token["token_id"]],
+                             track_coverage=_text(result.get("track_coverage")),
+                             boundary_sensitivity=json.dumps(
+                                 result.get("boundary_sensitivity", []), separators=(",", ":")))
                 if result["measurement_status"] == "rejected":
                     token["review_status"] = "rejected"
                 else:
@@ -112,7 +130,8 @@ def main(argv=None):
         token_path = project.root / project.manifest["tokens"]
         temporary = token_path.with_suffix(".csv.tmp")
         with temporary.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(project.tokens[0]))
+            from .project import TOKEN_FIELDS
+            writer = csv.DictWriter(handle, fieldnames=sorted(TOKEN_FIELDS), extrasaction="ignore")
             writer.writeheader(); writer.writerows(project.tokens)
         temporary.replace(token_path)
         try:
@@ -125,13 +144,15 @@ def main(argv=None):
         except (ImportError, AttributeError):
             parselmouth_version = "unknown"
         project.manifest["schema_version"] = 2
-        project.manifest["run"] = {"run_id": run_id, "code_revision": revision,
+        run = {"run_id": run_id, "code_revision": revision,
             "measurement_method": "Praat Burg via praat-parselmouth",
             "configuration": configuration,
             "tool_versions": {"python": platform.python_version(),
                               "praat_parselmouth": parselmouth_version},
             "input_hashes": {r["recording_id"]: r["audio_sha256"] for r in project.recordings},
             "measurement_inputs": measurement_inputs}
+        project.manifest.setdefault("runs", []).append(run)
+        project.manifest["run"] = run
         Path(args.manifest).write_text(json.dumps(project.manifest, indent=2) + "\n", encoding="utf-8")
         print(f"{run_id}: processed {measured} token intervals")
     elif args.command == "collect-youtube":
@@ -177,28 +198,49 @@ def main(argv=None):
         args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         print(f"transcribed {len(recordings)} recording(s)")
     elif args.command == "align":
-        from .automatic import align_words, read_lexicon, utc_run_id, write_rows
+        from .automatic import (align_words, export_mfa_corpus, import_mfa_textgrids,
+                                read_lexicon, run_mfa, utc_run_id, write_rows)
         from .project import TOKEN_FIELDS
         manifest, root, recordings = _unvalidated_recordings(args.manifest)
         token_path = root / manifest["tokens"]
         existing = _read_csv(token_path) if token_path.exists() else []
         if existing and not args.force:
             raise ProjectError("tokens table is not empty; pass --force to replace it")
-        lexicon = read_lexicon(args.lexicon)
         run_id = utc_run_id("align")
         tokens = []
+        transcripts = {}
         for recording in recordings:
             transcript_path = root / "transcripts" / f"{recording['recording_id']}.json"
-            if not transcript_path.exists():
-                raise ProjectError(f"missing transcript: {transcript_path}")
-            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-            tokens.extend(align_words(recording["recording_id"], transcript, lexicon, run_id=run_id,
-                                      data_origin=recording["data_origin"]))
+            if not transcript_path.exists(): raise ProjectError(f"missing transcript: {transcript_path}")
+            transcripts[recording["recording_id"]] = json.loads(transcript_path.read_text(encoding="utf-8"))
+        if args.backend == "projection":
+            lexicon = read_lexicon(args.lexicon)
+            for recording in recordings:
+                tokens.extend(align_words(recording["recording_id"], transcripts[recording["recording_id"]],
+                                          lexicon, run_id=run_id, data_origin=recording["data_origin"]))
+            method = "timestamped-word lexicon projection (legacy)"
+        else:
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix="microevolution-mfa-") as temporary:
+                work = Path(temporary); mappings = []
+                for recording in recordings:
+                    mappings.extend(export_mfa_corpus(root / recording["local_audio_path"],
+                        transcripts[recording["recording_id"]], work / "corpus",
+                        recording_id=recording["recording_id"], speaker_id=recording["speaker_id"]))
+                run_mfa(work / "corpus", str(args.lexicon), args.acoustic_model, work / "aligned",
+                        executable=args.mfa_executable, fine_tune=args.fine_tune, retries=args.retries)
+                tokens = import_mfa_textgrids(work / "aligned", mappings,
+                                             {r["recording_id"]: r for r in recordings}, run_id=run_id)
+            method = "Montreal Forced Aligner acoustic phone alignment"
         if not tokens:
             raise ProjectError("alignment produced no tokens; check transcript words and lexicon")
         write_rows(token_path, tokens, TOKEN_FIELDS)
-        manifest["alignment"] = {"run_id": run_id, "method": "timestamped-word lexicon projection",
-                                 "lexicon_sha256": hashlib.sha256(args.lexicon.read_bytes()).hexdigest()}
+        alignment = {"run_id": run_id, "method": method, "backend": args.backend,
+                     "acoustic_model": args.acoustic_model if args.backend == "mfa" else None,
+                     "fine_tune": args.fine_tune, "bounded_retries": args.retries,
+                     "lexicon_sha256": hashlib.sha256(args.lexicon.read_bytes()).hexdigest()}
+        manifest.setdefault("alignment_runs", []).append(alignment)
+        manifest["alignment"] = alignment
         args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         Project.load(args.manifest)
         print(f"{run_id}: aligned {len(tokens)} phone intervals")
@@ -211,7 +253,8 @@ def main(argv=None):
                                 iterations=args.iterations, seed=args.seed,
                                 reviews=ReviewStore(review_path), speaker_id=args.speaker_id,
                                 verified_only=not args.include_unverified,
-                                include_pending=args.include_pending)
+                                include_pending=args.include_pending,
+                                automatic_qc=args.automatic_qc)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

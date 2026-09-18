@@ -27,6 +27,16 @@ TOKEN_FIELDS = {
     "original_end_s", "f1_hz", "f2_hz", "duration_s", "f0_hz",
     "trajectory", "alignment_quality", "review_status",
     "exclusion_reason", "run_id", "data_origin",
+    "raw_phone_label", "alignment_method", "alignment_run_id",
+    "alignment_qc_status", "alignment_qc_reasons", "measurement_status",
+    "measurement_input_hash", "track_coverage", "boundary_sensitivity",
+}
+# Added fields are optional when reading schema-v1/v2 projects. Writers always
+# emit them, which provides a migration without rewriting archived study data.
+LEGACY_TOKEN_FIELDS = TOKEN_FIELDS - {
+    "raw_phone_label", "alignment_method", "alignment_run_id",
+    "alignment_qc_status", "alignment_qc_reasons", "measurement_status",
+    "measurement_input_hash", "track_coverage", "boundary_sensitivity",
 }
 
 
@@ -82,7 +92,7 @@ class Project:
             raise ProjectError("tokens table is empty")
         for label, rows, required in (
             ("recordings", self.recordings, RECORDING_FIELDS),
-            ("tokens", self.tokens, TOKEN_FIELDS),
+            ("tokens", self.tokens, LEGACY_TOKEN_FIELDS),
         ):
             missing = required - set(rows[0])
             if missing:
@@ -117,6 +127,8 @@ class Project:
                     raise ProjectError(f"sample rate mismatch: {recording['recording_id']}")
                 duration_by_recording[recording["recording_id"]] = wav.getnframes() / wav.getframerate()
         for token in self.tokens:
+            for field in TOKEN_FIELDS:
+                token.setdefault(field, "")
             if token["recording_id"] not in known:
                 raise ProjectError(f"token {token['token_id']} references absent recording")
             start = _float(token["original_start_s"], "original_start_s")
@@ -206,7 +218,10 @@ def token_revision(project: Project, token: dict[str, str]) -> str:
     recording = project.recording(token["recording_id"])
     identity = {"audio_sha256": recording["audio_sha256"],
                 "start": token["original_start_s"], "end": token["original_end_s"],
-                "alignment_quality": token["alignment_quality"], "run_id": token["run_id"]}
+                "alignment_quality": token["alignment_quality"],
+                "alignment_run_id": token.get("alignment_run_id", ""),
+                "measurement_input_hash": token.get("measurement_input_hash", ""),
+                "run_id": token["run_id"]}
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
@@ -220,16 +235,18 @@ def merged_tokens(project: Project, reviews: ReviewStore) -> list[dict[str, str]
 def select_tokens(project: Project, reviews: ReviewStore, *, speaker_id: str,
                   phone: str | None = None, data_origin: str = "observed",
                   statuses: tuple[str, ...] = ("accepted",),
-                  verified_only: bool = True) -> list[dict[str, str]]:
+                  verified_only: bool = True, automatic_qc: bool = False) -> list[dict[str, str]]:
     """Apply the same research-safe selection used by analysis and exports."""
     recordings = {r["recording_id"]: r for r in project.recordings}
     selected = []
     for token in merged_tokens(project, reviews):
         recording = recordings[token["recording_id"]]
         verified = token["alignment_quality"].lower() in {"manual", "verified", "manually_verified"}
+        auto_eligible = (automatic_qc and token.get("alignment_qc_status") == "accepted"
+                         and token.get("measurement_status", "measured") == "measured")
         if (recording["speaker_id"] == speaker_id and token["data_origin"] == data_origin
                 and token["review_status"] in statuses and (phone is None or token["phone_label"] == phone)
-                and (verified or not verified_only)):
+                and (verified or auto_eligible or not verified_only)):
             selected.append(token)
     return selected
 

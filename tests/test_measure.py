@@ -1,5 +1,6 @@
 import sys
 import types
+import pytest
 
 from microevolution.measure import measure_interval
 
@@ -35,3 +36,24 @@ def test_missing_pitch_does_not_discard_formants(monkeypatch):
     assert result["measurement_status"] == "measured"
     assert result["f1_hz"] == 700
     assert result["f0_hz"] is None
+
+
+@pytest.mark.parametrize("duration_ms", [40, 45, 50, 55, 60, 65, 70, 75, 80, 100, 150])
+def test_real_praat_continuous_context_tracks_short_intervals(tmp_path, duration_ms):
+    parselmouth = pytest.importorskip("parselmouth")
+    import numpy as np
+    rate, duration = 48000, 0.4
+    times = np.arange(int(rate * duration)) / rate
+    # Deterministic voiced, vowel-like harmonic signal with ample real context.
+    signal = sum((1 / harmonic) * np.sin(2 * np.pi * 120 * harmonic * times)
+                 for harmonic in range(1, 35))
+    sound = parselmouth.Sound(signal, sampling_frequency=rate)
+    from microevolution.measure import RecordingMeasurements, measure_sound_interval
+    analysis = RecordingMeasurements(sound)
+    start = .2 - duration_ms / 2000
+    result = measure_sound_interval(sound, start, start + duration_ms / 1000,
+                                    formants=analysis.formants)
+    assert len(result["trajectory"]) == 5
+    assert sum(p["f1_hz"] is not None and p["f2_hz"] is not None
+               for p in result["trajectory"]) == 5
+    assert result["measurement_status"] == "measured"
