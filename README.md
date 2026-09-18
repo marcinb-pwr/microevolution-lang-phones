@@ -183,22 +183,152 @@ Then run the remaining stages:
 
 ```bash
 microevolution transcribe chess-study/project.json --model small --language en
-microevolution align chess-study/project.json --lexicon chess-lexicon.txt
+microevolution align chess-study/project.json --backend projection --lexicon chess-lexicon.txt
 microevolution validate chess-study/project.json
 microevolution extract chess-study/project.json
 microevolution compare chess-study/project.json --phone AE --response f1_hz \
   --iterations 5000 --seed 2024 --output chess-study/AE-f1-models.json
 ```
 
-Inspect `transcripts/*.json` after transcription and review generated phone tokens
-before interpreting results. Words missing from the dictionary are skipped. More
-importantly, Whisper timestamps are word-level and this pipeline only divides a
-word interval proportionally among its dictionary phones. For publishable acoustic
-work, replace or manually correct those boundaries using an acoustic forced aligner
-and record that method in the manifest.
+This legacy reproduction path proportionally divides Whisper word timestamps and
+skips words absent from its small dictionary. It is retained for compatibility,
+not recommended for new acoustic work; use the MFA workflow below for production.
 
 The comparison needs at least three dated videos spanning two upload dates. A chess
 channel can also change microphones, rooms, editing, content format, and guests over
 time; those changes may look like phonetic change. Treat output as a screening
 result, use actual recording dates when known, review speaker identity, and model
 recording conditions before making substantive claims.
+
+## Automatic MFA alignment and continuous formants
+
+Production alignment uses Montreal Forced Aligner (MFA) 3.4.2 and English (US)
+ARPA acoustic model 3.0.0 with its matching dictionary. MFA is an **external
+executable** and is not installed by `pip install -e '.[automatic,test]'`. If
+`mfa` prints `command not found`, install it with conda-forge first. On macOS or
+Linux, install [Miniforge](https://github.com/conda-forge/miniforge) if the
+`conda` command is not already available, then run these commands from the
+repository root:
+
+> **Do not run `pip install`, `uv pip install`, or `uv add
+> montreal-forced-aligner`.** MFA depends on compiled programs and libraries that
+> conda-forge installs together. A PyPI/uv installation can instead try to build
+> `llvmlite` locally and fail with `LLVMConfig.cmake` or `LLVM_DIR` errors. Do not
+> work around that error by installing LLVM manually; discard that attempted
+> environment and use the conda environment below.
+
+```bash
+conda create --name microevolution-mfa --channel conda-forge \
+  python=3.11 montreal-forced-aligner=3.4.2 pip
+conda activate microevolution-mfa
+
+# This should print the executable inside the newly activated environment.
+command -v mfa
+mfa version
+
+# Download both matching ARPA 3.0 model packages into MFA's model store.
+mfa model download acoustic english_us_arpa --version 3.0.0
+mfa model download dictionary english_us_arpa --version 3.0.0
+mfa model inspect acoustic english_us_arpa
+
+# Install this project in the same environment.
+pip install -e '.[automatic,test]'
+microevolution --help
+```
+
+Run `conda activate microevolution-mfa` in every new shell before using either
+`mfa` or `microevolution`. `mamba` can be substituted for `conda`. Do not use
+`pip install montreal-forced-aligner`; the supported MFA installation includes
+native dependencies supplied by conda-forge.
+
+### macOS: installing `conda` first
+
+For a macOS shell where both `mfa` and `conda` are currently missing, one option
+is Miniforge through Homebrew:
+
+```bash
+brew install --cask miniforge
+conda init zsh
+exec zsh
+
+conda create --name microevolution-mfa --channel conda-forge \
+  python=3.11 montreal-forced-aligner=3.4.2 pip
+conda activate microevolution-mfa
+command -v mfa
+mfa version
+```
+
+On an Intel Mac, `conda info` should show `platform : osx-64`; on Apple Silicon
+it should show `platform : osx-arm64`. Avoid forcing the other architecture.
+If `conda activate` still reports that the shell is not initialized, run
+`conda init zsh` once and open a new Terminal window.
+
+The failed `uv pip install` does not install a usable `mfa`, so there is normally
+nothing to uninstall. If it was run inside a disposable uv virtual environment,
+remove that environment only after confirming it contains no other needed work.
+
+### MFA 3.4.2 dictionary inspection error
+
+Do not use `mfa model inspect dictionary english_us_arpa` as an installation
+check with MFA 3.4.2. That command has an upstream dictionary-inspection defect
+and can end with:
+
+```text
+AttributeError: 'PosixPath' object has no attribute 'load_dictionary_paths'
+```
+
+This traceback comes from MFA's pretty-printer after locating the dictionary; it
+does not by itself mean that the dictionary download failed, and the alignment
+command does not use that inspection code path. If both `mfa model download`
+commands completed, `mfa version` works, and acoustic-model inspection works,
+continue with project installation and a real alignment. MFA will produce a
+direct missing-model or dictionary-loading error if the alignment inputs are not
+available. The project intentionally passes the installed dictionary name
+directly to `mfa align` rather than trying to inspect or locate its private model
+file.
+
+Use the full downloaded ARPA dictionary augmented only with ARPAbet-compatible
+chess pronunciations. Transcribe and align with:
+
+```bash
+microevolution transcribe project.json --model small --language en
+microevolution align project.json --backend mfa \
+  --dictionary english_us_arpa --acoustic-model english_us_arpa \
+  --retries 1 --fine-tune --force
+microevolution extract project.json
+microevolution compare project.json --phone AO --automatic-qc --output results/ao.json
+```
+
+`--dictionary english_us_arpa` refers to the dictionary downloaded into MFA's
+model store; it is not a filesystem placeholder. To add chess pronunciations,
+export/copy the full matching dictionary, append only ARPAbet-compatible entries,
+and pass that actual file with `--lexicon /absolute/path/to/augmented.dict`.
+
+`align` makes pause/length-bounded utterances, retains their exact source offsets,
+and restores MFA phone times to recording coordinates. It never marks a token as
+human verified. Automatic QC failures remain in `tokens.csv` with reasons. The
+legacy proportional method remains available only as `--backend projection` for
+reproduction of old results.
+
+Extraction constructs one continuous-recording Praat Formant object per recording;
+only RMS, duration, and pitch checks use the phone crop. This preserves real
+neighbouring waveform support for short phones. Every measurement input digest
+includes the audio hash, boundaries, alignment run, algorithm, and settings.
+Changing any of them invalidates the cached value. `project.json` retains append-only
+`alignment_runs` and `runs` provenance histories while keeping the former singular
+keys for older readers. Existing tables are migrated in memory; the new columns
+are written by the next alignment/extraction, so archived data need not be edited.
+
+To rerun the bundled demonstration exactly:
+
+```bash
+python demo/generate_audio.py
+microevolution validate demo/project.json
+microevolution extract demo/project.json --force
+pytest -q
+```
+
+The repository does not contain the seven original study WAVs. Run the four-way
+projection/MFA and crop/continuous validation on those secured originals before
+interpreting longitudinal results; the implementation and synthetic real-Praat
+regression can be validated without them.

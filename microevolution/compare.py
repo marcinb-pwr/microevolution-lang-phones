@@ -34,7 +34,7 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
                    iterations: int = 2000, seed: int = 0,
                    reviews: ReviewStore | None = None, speaker_id: str | None = None,
                    data_origin: str = "observed", verified_only: bool = True,
-                   include_pending: bool = False) -> dict:
+                   include_pending: bool = False, automatic_qc: bool = False) -> dict:
     """Compare intercept-only and linear-time models by cluster permutation.
 
     Each recording contributes one mean, preventing recordings with many tokens
@@ -58,10 +58,11 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
         available = ", ".join(sorted({t["phone_label"] for t in project.tokens}))
         raise ProjectError(f"phone {phone!r} does not occur in the token table; available phones: {available}")
     values: dict[str, list[float]] = {}
-    statuses = ("accepted", "pending") if include_pending else ("accepted",)
+    statuses = (("accepted", "pending") if (include_pending or automatic_qc)
+                else ("accepted",))
     for token in select_tokens(project, reviews, speaker_id=speaker_id, phone=phone,
                                data_origin=data_origin, statuses=statuses,
-                               verified_only=verified_only):
+                               verified_only=verified_only, automatic_qc=automatic_qc):
         if token[response]:
             values.setdefault(token["recording_id"], []).append(float(token[response]))
     rows = []
@@ -111,4 +112,17 @@ def compare_models(project: Project, *, phone: str, response: str = "f1_hz",
             "iterations": iterations, "seed": seed,
             "included_review_statuses": list(statuses),
             "included_unverified_boundaries": not verified_only,
+            "automatic_qc_eligibility": automatic_qc,
+            "exclusions": _exclusion_counts(requested, values),
             "caution": "Exploratory recording-level comparison; upload dates may be proxies."}
+
+
+def _exclusion_counts(requested, included_by_recording):
+    counts = {}
+    for token in requested:
+        if token["recording_id"] in included_by_recording and token.get("measurement_status") == "measured":
+            continue
+        reason = (token.get("alignment_qc_reasons") or token.get("exclusion_reason")
+                  or "not_eligible")
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
