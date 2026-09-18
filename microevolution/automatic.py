@@ -11,6 +11,8 @@ import csv
 import hashlib
 import json
 import subprocess
+import re
+import shutil
 import wave
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -175,3 +177,126 @@ def write_rows(path: Path, rows: list[dict[str, str]], fields: set[str]) -> None
         writer = csv.DictWriter(handle, fieldnames=ordered, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def segment_words(words: list[dict], *, min_s: float = 2.0, max_s: float = 15.0,
+                  pause_s: float = 0.6) -> list[dict]:
+    """Make bounded utterances without changing the words' recording coordinates."""
+    valid = [w for w in words if float(w["end"]) > float(w["start"]) >= 0]
+    segments, current = [], []
+    for word in valid:
+        if current:
+            span = float(word["end"]) - float(current[0]["start"])
+            gap = float(word["start"]) - float(current[-1]["end"])
+            if span > max_s or (gap >= pause_s and
+                                float(current[-1]["end"]) - float(current[0]["start"]) >= min_s):
+                segments.append(_segment(current)); current = []
+        current.append(word)
+    if current:
+        segments.append(_segment(current))
+    return segments
+
+
+def _segment(words):
+    return {"start": float(words[0]["start"]), "end": float(words[-1]["end"]),
+            "text": " ".join(str(w["word"]).strip() for w in words), "words": words}
+
+
+def export_mfa_corpus(audio: Path, transcript: dict, corpus: Path, *, recording_id: str,
+                      speaker_id: str, context_s: float = 0.05) -> list[dict]:
+    """Write segment WAV/LAB pairs and return their exact source offsets."""
+    import wave
+    segments = segment_words(transcript.get("words", []))
+    speaker = re.sub(r"[^A-Za-z0-9_-]", "_", speaker_id) or "speaker"
+    target = corpus / speaker; target.mkdir(parents=True, exist_ok=True)
+    mapping = []
+    with wave.open(str(audio), "rb") as source:
+        rate, total = source.getframerate(), source.getnframes()
+        for index, segment in enumerate(segments):
+            first = max(0, int(round((segment["start"] - context_s) * rate)))
+            last = min(total, int(round((segment["end"] + context_s) * rate)))
+            source.setpos(first); frames = source.readframes(last - first)
+            stem = f"{recording_id}__{index:05d}"
+            wav_path = target / f"{stem}.wav"
+            with wave.open(str(wav_path), "wb") as output:
+                output.setparams(source.getparams()); output.writeframes(frames)
+            (target / f"{stem}.lab").write_text(segment["text"] + "\n", encoding="utf-8")
+            mapping.append({"stem": stem, "recording_id": recording_id,
+                            "offset_s": first / rate, "duration_s": (last-first) / rate})
+    return mapping
+
+
+def _textgrid_tiers(path: Path) -> dict[str, list[tuple[float, float, str]]]:
+    """Parse MFA's long TextGrid format without adding a runtime dependency."""
+    tiers, name = {}, None
+    xmin = xmax = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("name ="):
+            name = line.split("=", 1)[1].strip().strip('"'); tiers.setdefault(name, [])
+        elif name and line.startswith("xmin ="):
+            xmin = float(line.split("=", 1)[1])
+        elif name and line.startswith("xmax ="):
+            xmax = float(line.split("=", 1)[1])
+        elif name and line.startswith("text =") and xmin is not None and xmax is not None:
+            text = line.split("=", 1)[1].strip().strip('"').replace('""', '"')
+            tiers[name].append((xmin, xmax, text)); xmin = xmax = None
+    return tiers
+
+
+def import_mfa_textgrids(aligned: Path, mappings: list[dict], recordings: dict[str, dict],
+                         *, run_id: str) -> list[dict[str, str]]:
+    """Import ARPA phone tiers and restore original-recording coordinates."""
+    by_stem = {m["stem"]: m for m in mappings}; tokens = []
+    for grid in aligned.rglob("*.TextGrid"):
+        mapping = by_stem.get(grid.stem)
+        if not mapping:
+            continue
+        tiers = _textgrid_tiers(grid)
+        phones = next((v for k, v in tiers.items() if k.lower() in {"phones", "phone"}), [])
+        words = next((v for k, v in tiers.items() if k.lower() in {"words", "word"}), [])
+        for index, (local_start, local_end, raw_phone) in enumerate(phones):
+            if not raw_phone or raw_phone.lower() in {"sil", "sp", "spn", "<eps>"}:
+                continue
+            start, end = mapping["offset_s"] + local_start, mapping["offset_s"] + local_end
+            word = next((label for a, b, label in words if label and a < local_end and b > local_start), "")
+            canonical = raw_phone.rstrip("012").upper(); stress = raw_phone[len(canonical):]
+            reasons = qc_phone_interval(start, end, mapping["duration_s"] + mapping["offset_s"])
+            row = {field: "" for field in TOKEN_FIELDS}
+            row.update(token_id=f'{mapping["stem"]}-p{index:04d}', recording_id=mapping["recording_id"],
+                       word=word.upper(), raw_phone_label=raw_phone, phone_label=canonical,
+                       phone_set="ARPAbet", stress=stress, original_start_s=f"{start:.6f}",
+                       original_end_s=f"{end:.6f}", duration_s=f"{end-start:.6f}",
+                       alignment_quality="mfa_acoustic", alignment_method="mfa",
+                       alignment_run_id=run_id, alignment_qc_status="excluded" if reasons else "accepted",
+                       alignment_qc_reasons=";".join(reasons), review_status="pending", run_id=run_id,
+                       data_origin=recordings[mapping["recording_id"]]["data_origin"])
+            tokens.append(row)
+    return tokens
+
+
+def qc_phone_interval(start: float, end: float, recording_end: float) -> list[str]:
+    reasons = []
+    if start < 0 or end <= start or end > recording_end + 1e-6: reasons.append("invalid_bounds")
+    duration = end - start
+    if duration < .015: reasons.append("collapsed_phone")
+    if duration > .5: reasons.append("stretched_phone")
+    return reasons
+
+
+def run_mfa(corpus: Path, dictionary: str, acoustic_model: str, aligned: Path, *,
+            executable: str = "mfa", fine_tune: bool = False, retries: int = 1) -> None:
+    """Run pinned external MFA, retrying only a bounded number of failed runs."""
+    command = [executable, "align", str(corpus), dictionary, acoustic_model, str(aligned),
+               "--clean", "--output_format", "long_textgrid"]
+    if fine_tune: command.append("--fine_tune")
+    errors = []
+    for _ in range(retries + 1):
+        try:
+            subprocess.run(command, check=True, text=True, capture_output=True); return
+        except FileNotFoundError as exc:
+            raise ProjectError("MFA executable not found; install and download the pinned models") from exc
+        except subprocess.CalledProcessError as exc:
+            errors.append((exc.stderr or exc.stdout or str(exc)).strip())
+            shutil.rmtree(aligned, ignore_errors=True); aligned.mkdir(parents=True, exist_ok=True)
+    raise ProjectError(f"MFA failed after {retries + 1} attempt(s): {errors[-1]}")

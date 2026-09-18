@@ -6,7 +6,7 @@ import wave
 import pytest
 
 from microevolution.project import (Project, ProjectError, ReviewStore, export_zip,
-                                    merged_tokens, token_revision)
+                                    merged_tokens, select_tokens, token_revision)
 
 
 def make_project(tmp_path, *, recording_date="", start="0.1", end="0.2"):
@@ -70,6 +70,18 @@ def test_review_is_invalidated_when_interval_changes(tmp_path):
     reviews.set("t1", "accepted", revision=token_revision(project, project.tokens[0]))
     project.tokens[0]["original_end_s"] = "0.25"
     assert merged_tokens(project, reviews)[0]["review_status"] == "pending"
+
+
+def test_automatic_qc_is_separate_from_human_review_but_explicitly_eligible(tmp_path):
+    project = Project.load(make_project(tmp_path))
+    token = project.tokens[0]
+    token.update(alignment_quality="mfa_acoustic", alignment_qc_status="accepted",
+                 measurement_status="measured", review_status="pending")
+    selected = select_tokens(project, ReviewStore(tmp_path / "reviews.db"), speaker_id="s",
+                             statuses=("accepted", "pending"), automatic_qc=True)
+    assert [row["token_id"] for row in selected] == ["t1"]
+    assert selected[0]["review_status"] == "pending"
+    assert not select_tokens(project, ReviewStore(tmp_path / "reviews2.db"), speaker_id="s")
 
 
 @pytest.mark.parametrize("start,end", [("0.3", "0.2"), ("-1", "0.2")])

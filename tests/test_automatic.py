@@ -5,7 +5,8 @@ import subprocess
 
 import pytest
 
-from microevolution.automatic import align_words, collect_youtube, read_lexicon
+from microevolution.automatic import (align_words, collect_youtube, import_mfa_textgrids,
+                                      read_lexicon, segment_words)
 from microevolution.compare import compare_models
 from microevolution.project import Project, ProjectError, ReviewStore, token_revision
 from test_project import make_project
@@ -21,6 +22,41 @@ def test_alignment_preserves_coordinates_and_marks_estimates(tmp_path):
     assert tokens[0]["original_start_s"] == "1.000000"
     assert tokens[-1]["original_end_s"] == "1.400000"
     assert {t["alignment_quality"] for t in tokens} == {"lexicon_projected"}
+
+
+def test_mfa_import_restores_segment_offset_and_automatic_qc(tmp_path):
+    grid = tmp_path / "rec__00000.TextGrid"
+    grid.write_text('''File type = "ooTextFile"
+Object class = "TextGrid"
+item [1]:
+ class = "IntervalTier"
+ name = "words"
+ intervals [1]:
+ xmin = 0.1
+ xmax = 0.4
+ text = "pawn"
+item [2]:
+ class = "IntervalTier"
+ name = "phones"
+ intervals [1]:
+ xmin = 0.15
+ xmax = 0.30
+ text = "AO1"
+''')
+    rows = import_mfa_textgrids(tmp_path, [{"stem": "rec__00000", "recording_id": "rec",
+        "offset_s": 10.0, "duration_s": 2.0}], {"rec": {"data_origin": "observed"}}, run_id="mfa-1")
+    assert rows[0]["original_start_s"] == "10.150000"
+    assert rows[0]["original_end_s"] == "10.300000"
+    assert rows[0]["phone_label"] == "AO"
+    assert rows[0]["alignment_qc_status"] == "accepted"
+    assert rows[0]["review_status"] == "pending"
+
+
+def test_segmentation_splits_long_utterances_and_retains_absolute_times():
+    words = [{"word": str(i), "start": i * 2.0, "end": i * 2.0 + .5} for i in range(10)]
+    segments = segment_words(words, max_s=5)
+    assert len(segments) > 1
+    assert segments[1]["start"] == float(segments[1]["words"][0]["start"])
 
 
 def test_model_comparison_is_reproducible_and_recording_level(tmp_path):
