@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from microevolution.automatic import (align_words, collect_youtube, import_mfa_textgrids,
-                                      read_lexicon, segment_words)
+                                      read_lexicon, run_mfa, segment_words)
 from microevolution.compare import compare_models
 from microevolution.project import Project, ProjectError, ReviewStore, token_revision
 from test_project import make_project
@@ -57,6 +57,16 @@ def test_segmentation_splits_long_utterances_and_retains_absolute_times():
     segments = segment_words(words, max_s=5)
     assert len(segments) > 1
     assert segments[1]["start"] == float(segments[1]["words"][0]["start"])
+
+
+def test_missing_mfa_explains_conda_installation(tmp_path, monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("mfa")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(ProjectError, match=r"conda-forge.*mfa version"):
+        run_mfa(tmp_path / "corpus", "english_us_arpa", "english_us_arpa",
+                tmp_path / "aligned")
 
 
 def test_model_comparison_is_reproducible_and_recording_level(tmp_path):

@@ -43,7 +43,10 @@ def main(argv=None):
     transcribe.add_argument("--language")
     align = sub.add_parser("align", help="align transcript phones (MFA is the production backend)")
     align.add_argument("manifest", type=Path)
-    align.add_argument("--lexicon", type=Path, required=True)
+    align.add_argument("--dictionary", default="english_us_arpa",
+                       help="installed MFA dictionary name (default: english_us_arpa)")
+    align.add_argument("--lexicon", type=Path,
+                       help="custom dictionary file; required only by the legacy projection backend")
     align.add_argument("--force", action="store_true")
     align.add_argument("--backend", choices=["mfa", "projection"], default="mfa")
     align.add_argument("--acoustic-model", default="english_us_arpa")
@@ -214,12 +217,15 @@ def main(argv=None):
             if not transcript_path.exists(): raise ProjectError(f"missing transcript: {transcript_path}")
             transcripts[recording["recording_id"]] = json.loads(transcript_path.read_text(encoding="utf-8"))
         if args.backend == "projection":
+            if args.lexicon is None:
+                raise ProjectError("--lexicon is required with --backend projection")
             lexicon = read_lexicon(args.lexicon)
             for recording in recordings:
                 tokens.extend(align_words(recording["recording_id"], transcripts[recording["recording_id"]],
                                           lexicon, run_id=run_id, data_origin=recording["data_origin"]))
             method = "timestamped-word lexicon projection (legacy)"
         else:
+            dictionary = str(args.lexicon) if args.lexicon is not None else args.dictionary
             import tempfile
             with tempfile.TemporaryDirectory(prefix="microevolution-mfa-") as temporary:
                 work = Path(temporary); mappings = []
@@ -227,7 +233,7 @@ def main(argv=None):
                     mappings.extend(export_mfa_corpus(root / recording["local_audio_path"],
                         transcripts[recording["recording_id"]], work / "corpus",
                         recording_id=recording["recording_id"], speaker_id=recording["speaker_id"]))
-                run_mfa(work / "corpus", str(args.lexicon), args.acoustic_model, work / "aligned",
+                run_mfa(work / "corpus", dictionary, args.acoustic_model, work / "aligned",
                         executable=args.mfa_executable, fine_tune=args.fine_tune, retries=args.retries)
                 tokens = import_mfa_textgrids(work / "aligned", mappings,
                                              {r["recording_id"]: r for r in recordings}, run_id=run_id)
@@ -237,8 +243,10 @@ def main(argv=None):
         write_rows(token_path, tokens, TOKEN_FIELDS)
         alignment = {"run_id": run_id, "method": method, "backend": args.backend,
                      "acoustic_model": args.acoustic_model if args.backend == "mfa" else None,
+                     "dictionary": dictionary if args.backend == "mfa" else str(args.lexicon),
                      "fine_tune": args.fine_tune, "bounded_retries": args.retries,
-                     "lexicon_sha256": hashlib.sha256(args.lexicon.read_bytes()).hexdigest()}
+                     "lexicon_sha256": (hashlib.sha256(args.lexicon.read_bytes()).hexdigest()
+                                        if args.lexicon is not None else "installed-model")}
         manifest.setdefault("alignment_runs", []).append(alignment)
         manifest["alignment"] = alignment
         args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

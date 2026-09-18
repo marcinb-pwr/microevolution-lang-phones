@@ -295,7 +295,10 @@ def run_mfa(corpus: Path, dictionary: str, acoustic_model: str, aligned: Path, *
         try:
             subprocess.run(command, check=True, text=True, capture_output=True); return
         except FileNotFoundError as exc:
-            raise ProjectError("MFA executable not found; install and download the pinned models") from exc
+            raise ProjectError(
+                "MFA executable not found. Install montreal-forced-aligner from conda-forge, "
+                "activate that environment, and confirm `mfa version` works; see README.md."
+            ) from exc
         except subprocess.CalledProcessError as exc:
             errors.append((exc.stderr or exc.stdout or str(exc)).strip())
             shutil.rmtree(aligned, ignore_errors=True); aligned.mkdir(parents=True, exist_ok=True)

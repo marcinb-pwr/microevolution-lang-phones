@@ -203,17 +203,89 @@ recording conditions before making substantive claims.
 ## Automatic MFA alignment and continuous formants
 
 Production alignment uses Montreal Forced Aligner (MFA) 3.4.2 and English (US)
-ARPA acoustic model 3.0.0 with its matching dictionary. Install MFA in a separate conda environment (the
-Python package is intentionally not imported by this project), record the exact
-installed versions, then download the pinned model generation:
+ARPA acoustic model 3.0.0 with its matching dictionary. MFA is an **external
+executable** and is not installed by `pip install -e '.[automatic,test]'`. If
+`mfa` prints `command not found`, install it with conda-forge first. On macOS or
+Linux, install [Miniforge](https://github.com/conda-forge/miniforge) if the
+`conda` command is not already available, then run these commands from the
+repository root:
+
+> **Do not run `pip install`, `uv pip install`, or `uv add
+> montreal-forced-aligner`.** MFA depends on compiled programs and libraries that
+> conda-forge installs together. A PyPI/uv installation can instead try to build
+> `llvmlite` locally and fail with `LLVMConfig.cmake` or `LLVM_DIR` errors. Do not
+> work around that error by installing LLVM manually; discard that attempted
+> environment and use the conda environment below.
 
 ```bash
-mfa model download acoustic english_us_arpa
-mfa model download dictionary english_us_arpa
+conda create --name microevolution-mfa --channel conda-forge \
+  python=3.11 montreal-forced-aligner=3.4.2 pip
+conda activate microevolution-mfa
+
+# This should print the executable inside the newly activated environment.
+command -v mfa
 mfa version
+
+# Download both matching ARPA 3.0 model packages into MFA's model store.
+mfa model download acoustic english_us_arpa --version 3.0.0
+mfa model download dictionary english_us_arpa --version 3.0.0
 mfa model inspect acoustic english_us_arpa
+
+# Install this project in the same environment.
 pip install -e '.[automatic,test]'
+microevolution --help
 ```
+
+Run `conda activate microevolution-mfa` in every new shell before using either
+`mfa` or `microevolution`. `mamba` can be substituted for `conda`. Do not use
+`pip install montreal-forced-aligner`; the supported MFA installation includes
+native dependencies supplied by conda-forge.
+
+### macOS: installing `conda` first
+
+For a macOS shell where both `mfa` and `conda` are currently missing, one option
+is Miniforge through Homebrew:
+
+```bash
+brew install --cask miniforge
+conda init zsh
+exec zsh
+
+conda create --name microevolution-mfa --channel conda-forge \
+  python=3.11 montreal-forced-aligner=3.4.2 pip
+conda activate microevolution-mfa
+command -v mfa
+mfa version
+```
+
+On an Intel Mac, `conda info` should show `platform : osx-64`; on Apple Silicon
+it should show `platform : osx-arm64`. Avoid forcing the other architecture.
+If `conda activate` still reports that the shell is not initialized, run
+`conda init zsh` once and open a new Terminal window.
+
+The failed `uv pip install` does not install a usable `mfa`, so there is normally
+nothing to uninstall. If it was run inside a disposable uv virtual environment,
+remove that environment only after confirming it contains no other needed work.
+
+### MFA 3.4.2 dictionary inspection error
+
+Do not use `mfa model inspect dictionary english_us_arpa` as an installation
+check with MFA 3.4.2. That command has an upstream dictionary-inspection defect
+and can end with:
+
+```text
+AttributeError: 'PosixPath' object has no attribute 'load_dictionary_paths'
+```
+
+This traceback comes from MFA's pretty-printer after locating the dictionary; it
+does not by itself mean that the dictionary download failed, and the alignment
+command does not use that inspection code path. If both `mfa model download`
+commands completed, `mfa version` works, and acoustic-model inspection works,
+continue with project installation and a real alignment. MFA will produce a
+direct missing-model or dictionary-loading error if the alignment inputs are not
+available. The project intentionally passes the installed dictionary name
+directly to `mfa align` rather than trying to inspect or locate its private model
+file.
 
 Use the full downloaded ARPA dictionary augmented only with ARPAbet-compatible
 chess pronunciations. Transcribe and align with:
@@ -221,11 +293,16 @@ chess pronunciations. Transcribe and align with:
 ```bash
 microevolution transcribe project.json --model small --language en
 microevolution align project.json --backend mfa \
-  --lexicon /path/to/english_us_arpa.dict --acoustic-model english_us_arpa \
+  --dictionary english_us_arpa --acoustic-model english_us_arpa \
   --retries 1 --fine-tune --force
 microevolution extract project.json
 microevolution compare project.json --phone AO --automatic-qc --output results/ao.json
 ```
+
+`--dictionary english_us_arpa` refers to the dictionary downloaded into MFA's
+model store; it is not a filesystem placeholder. To add chess pronunciations,
+export/copy the full matching dictionary, append only ARPAbet-compatible entries,
+and pass that actual file with `--lexicon /absolute/path/to/augmented.dict`.
 
 `align` makes pause/length-bounded utterances, retains their exact source offsets,
 and restores MFA phone times to recording coordinates. It never marks a token as
