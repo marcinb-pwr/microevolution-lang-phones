@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from microevolution.project import Project, ProjectError, ReviewStore, export_zip, merged_tokens
+from microevolution.vowel_space import date_centroids, endpoint_change
 
 
 st.set_page_config(page_title="Vowel microevolution", layout="wide")
@@ -90,21 +91,59 @@ with right:
     else:
         measured = measured.assign(date=measured["effective_date"].dt.strftime("%Y-%m-%d"))
         dates = sorted(measured["date"].unique())
+        centroids = date_centroids(measured)
+        change = endpoint_change(centroids)
+        if change:
+            st.markdown(
+                f"**Observed shift:** {change['first_date']} → {change['last_date']} · "
+                f"F1 **{change['delta_f1']:+.0f} Hz** ({change['height']}) · "
+                f"F2 **{change['delta_f2']:+.0f} Hz** ({change['backness']})"
+            )
+            if min(change["first_tokens"], change["last_tokens"]) < 3:
+                st.warning(
+                    "An endpoint has fewer than 3 tokens. Treat this direction as a review prompt, "
+                    "not evidence of change."
+                )
+        st.caption(
+            "Dots are tokens; diamonds are the median for each date and the line shows their time order. "
+            "Click a dot to open it in the audio review below."
+        )
         fig = px.scatter(
             measured, x="f2_hz", y="f1_hz", color="date",
             category_orders={"date": dates},
             hover_data=["word", "token_id", "recording_id", "date_display"],
+            custom_data=["token_id"],
             labels={"date": "Effective date"},
         )
+        fig.update_traces(marker={"size": 8, "opacity": 0.55})
+        fig.add_trace(go.Scatter(
+            x=centroids["f2_hz"], y=centroids["f1_hz"], mode="lines+markers+text",
+            text=centroids["effective_date"].dt.strftime("%Y-%m-%d"), textposition="top center",
+            marker={
+                "symbol": "diamond", "size": 12, "color": "#202636",
+                "line": {"color": "white", "width": 1},
+            },
+            line={"color": "#202636", "width": 2}, name="Date medians",
+            hovertemplate="%{text}<br>Median F1 %{y:.0f} Hz<br>Median F2 %{x:.0f} Hz<extra></extra>",
+        ))
         fig.update_xaxes(autorange="reversed", title="F2 (Hz; decreases →)")
         fig.update_yaxes(autorange="reversed", title="F1 (Hz; increases ↓)")
-        st.plotly_chart(fig, use_container_width=True)
+        selection = st.plotly_chart(
+            fig, use_container_width=True, key="vowel_space", on_select="rerun", selection_mode="points"
+        )
+        selected_points = selection.selection.points if selection else []
+        selected_token_id = None
+        if selected_points and selected_points[0].get("customdata"):
+            selected_token_id = selected_points[0]["customdata"][0]
 
 st.subheader("Original-audio review")
 if not filtered:
     st.info("No tokens match the filters.")
     st.stop()
-token_id = st.selectbox("Token", [r["token_id"] for r in filtered])
+token_ids = [r["token_id"] for r in filtered]
+selected_token_id = locals().get("selected_token_id")
+selected_token_index = token_ids.index(selected_token_id) if selected_token_id in token_ids else 0
+token_id = st.selectbox("Token", token_ids, index=selected_token_index)
 token = next(r for r in filtered if r["token_id"] == token_id)
 rec = recordings[token["recording_id"]]
 st.write(f"**{token['word']}** /{token['phone_label']}/ · {token['date_display']} · "
